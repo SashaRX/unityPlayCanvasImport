@@ -1647,6 +1647,16 @@ namespace Assets.Editor.PlayCanvas {
                 Debug.Log($"Found cached path for material {materialId}: {cachedPath}");
                 return cachedPath;
             }
+
+            // Пробуем определить путь напрямую через список ассетов
+            if (allAssets != null && allAssets.TryGetValue(materialId, out PCAsset matAsset)) {
+                string pcPath = GetPlayCanvasFolderPath(matAsset.folder);
+                if (!string.IsNullOrEmpty(pcPath)) {
+                    materialPathCache[materialId] = pcPath;
+                    Debug.Log($"Material {materialId} path resolved from asset list: {pcPath}");
+                    return pcPath;
+                }
+            }
             
             // Если не нашли в кеше путей, ищем через модели
             foreach (KeyValuePair<int, AssetUsageInfo> modelEntry in collectedModels) {
