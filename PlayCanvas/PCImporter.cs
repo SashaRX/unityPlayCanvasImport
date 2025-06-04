@@ -305,7 +305,12 @@ namespace Assets.Editor.PlayCanvas {
                 EditorApplication.delayCall += async () => {
                     try {
                         LoadSceneDataFromJsonFile(entityJsonPath);
-                        
+
+                        if (sceneData?.root == null) {
+                            Debug.LogError("Scene data not loaded or invalid. Aborting import.");
+                            return;
+                        }
+
                         stats = new SceneStatistics();
                         CollectSceneStats(sceneData.root, ref stats);
                         
