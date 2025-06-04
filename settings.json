@@ -1,0 +1,8 @@
+{
+    "github.copilot.advanced": {
+        "enableAutoCompletions": true,
+        "enableChat": true,
+        "enableInlineCompletions": true,
+        "enableTelemetry": true
+    }
+}

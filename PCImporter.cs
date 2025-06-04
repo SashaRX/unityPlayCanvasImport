@@ -1636,6 +1636,11 @@ namespace Assets.Editor.PlayCanvas {
             }
         }
 
+        /// <summary>
+        /// Gets the folder path for a specified material ID.
+        /// </summary>
+        /// <param name="materialId">The ID of the material.</param>
+        /// <returns>The folder path for the material, or null if not found.</returns>
         private string GetMaterialFolderPath(int materialId) {
             // Сначала проверяем наш кеш путей
             if (materialPathCache.TryGetValue(materialId, out string cachedPath)) {
@@ -1644,7 +1649,7 @@ namespace Assets.Editor.PlayCanvas {
             }
             
             // Если не нашли в кеше путей, ищем через модели
-            foreach (var modelEntry in collectedModels) {
+            foreach (KeyValuePair<int, AssetUsageInfo> modelEntry in collectedModels) {
                 if (modelToMaterialsMap.TryGetValue(modelEntry.Key, out List<int> materials) && materials.Contains(materialId)) {
                     // Нашли модель, которая использует этот материал
                     if (assetCache?.entries.TryGetValue(modelEntry.Key, out AssetCacheEntry modelCache) == true) {
@@ -1660,7 +1665,7 @@ namespace Assets.Editor.PlayCanvas {
             }
             
             // Проверяем через render assets
-            foreach (var renderEntry in collectedRenderAssets) {
+            foreach (KeyValuePair<int, AssetUsageInfo> renderEntry in collectedRenderAssets) {
                 // Тут нужно проверить, использует ли render asset этот материал
                 // Это сложнее, так как нужен доступ к оригинальным данным
             }
