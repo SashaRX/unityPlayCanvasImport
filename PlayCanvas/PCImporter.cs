@@ -42,6 +42,7 @@ namespace Assets.Editor.PlayCanvas {
         private string entityJsonPath = ""; // Путь к JSON файлу
         private string jsonContent = ""; // Хранит последнее загруженное содержимое JSON
         private string lastJsonFilePath = ""; // Хранит путь к последнему загруженному JSON файлу
+        private DateTime lastJsonFileTimestamp = DateTime.MinValue; // Время последнего чтения файла
         private string targetFolderMat = ""; // Папка для материалов
 
         [NonSerialized]
@@ -526,7 +527,11 @@ namespace Assets.Editor.PlayCanvas {
                 return;
             }
 
-            if (lastJsonFilePath == jsonFilePath && jsonContent != null && jsonContent.Length == new FileInfo(jsonFilePath).Length) {
+            DateTime fileTimestamp = File.GetLastWriteTimeUtc(jsonFilePath);
+
+            if (lastJsonFilePath == jsonFilePath &&
+                jsonContent != null &&
+                lastJsonFileTimestamp == fileTimestamp) {
                 if (showDebugLogs) Debug.Log("Scene data already loaded and unchanged.");
                 return;
             }
@@ -536,6 +541,7 @@ namespace Assets.Editor.PlayCanvas {
             }
 
             lastJsonFilePath = jsonFilePath;
+            lastJsonFileTimestamp = fileTimestamp;
 
             try {
                 JsonSerializerSettings settings = new() {
