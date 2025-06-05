@@ -35,6 +35,9 @@ namespace Assets.Editor.PlayCanvas {
         [NonSerialized]
         private FolderMapping folderMapping; // Ссылка на маппинг папок
 
+        [NonSerialized] 
+        private AssetIDMapping assetIDMapping;
+
         private bool showDebugLogs = true; // Переменная для показа логов, вырубаю, что бы было меньше сообщений в консоли
         private bool showPlayCanvasSettings = true; // Переменная для управления Foldout для настроек PlayCanvas
         private bool showSceneStats = true; // Переменная для управления Foldout для статистики сцены
@@ -88,6 +91,7 @@ namespace Assets.Editor.PlayCanvas {
         private const string folderName = "PlayCanvasData"; // Папка для хранения данных
         private const string entityMappingPath = "EntityIDMapping.asset"; // Папка для хранения данных
         private const string folderMappingPath = "FolderMapping.asset"; // Папка для хранения данных
+        private const string assetMappingPath = "AssetIDMapping.asset";
 
         #region Asset Dependencies
 
@@ -261,76 +265,10 @@ namespace Assets.Editor.PlayCanvas {
                 EditorGUILayout.HelpBox($"Cached assets: {assetCache.entries.Count}", MessageType.Info);
             }
 
-            /*if (GUILayout.Button("Debug Folder Structure")) {
-                Debug.Log("=== Folder Structure Debug ===");
-                
-                // Проверяем FolderMapping
-                Debug.Log($"Total folders in mapping: {folderMapping.folders.Count}");
-                foreach (var folder in folderMapping.folders.Take(20)) {
-                    Debug.Log($"Folder {folder.id}: '{folder.name}' -> '{folder.path}'");
-                }
-                
-                // Проверяем конкретные папки из примера
-                int[] testFolderIds = { 131129397, 133166066 };
-                foreach (int folderId in testFolderIds) {
-                    string path = GetPlayCanvasFolderPath(folderId);
-                    Debug.Log($"Folder {folderId} resolves to: '{path}'");
-                }
-                
-                // Проверяем материалы
-                if (allAssetsCache != null) {
-                    var materials = allAssetsCache.Values.Where(a => a.type == "material").Take(10);
-                    foreach (var mat in materials) {
-                        string folderPath = GetPlayCanvasFolderPath(mat.folder);
-                        Debug.Log($"Material '{mat.name}' (ID: {mat.id}) in folder {mat.folder} -> path: '{folderPath}'");
-                    }
-                }
-            }*/
-
-            if (GUILayout.Button("Debug API Response")) {
-                EditorApplication.delayCall += async () => {
-                    string url = $"https://playcanvas.com/api/projects/{projectId}/assets?branchId={branchId}&limit=5";
-                    
-                    using HttpClient client = new();
-                    client.DefaultRequestHeaders.Add("Authorization", $"Bearer {tokenId}");
-                    
-                    try {
-                        string json = await client.GetStringAsync(url);
-                        Debug.Log($"Raw API Response (first 1000 chars):\n{json.Substring(0, Math.Min(1000, json.Length))}");
-                        
-                        JObject root = JObject.Parse(json);
-                        if (root["result"] is JArray resultArray) {
-                            foreach (JToken item in resultArray.Take(3)) {
-                                Debug.Log($"Asset: type={item["type"]}, id={item["id"]}, parent={item["parent"]}, name={item["name"]}");
-                            }
-                        }
-                    }
-                    catch (Exception ex) {
-                        Debug.LogError($"Debug failed: {ex.Message}");
-                    }
-                };
-            }
-
             if (folderMapping != null) {
                 EditorGUILayout.HelpBox($"Folder mapping status: {folderMapping.folders.Count} folders loaded", MessageType.Info);
             } else {
                 EditorGUILayout.HelpBox("Folder mapping is null!", MessageType.Error);
-            }
-
-            if (GUILayout.Button("Test Load Folders Only")) {
-                EditorApplication.delayCall += async () => {
-                    Debug.Log("=== Testing Folder Loading ===");
-                    folderMapping.folders.Clear(); // Очищаем старые данные
-                    await FetchFoldersFromAPI();
-                    Debug.Log($"Total folders in mapping: {folderMapping.folders.Count}");
-                    
-                    // Выводим первые 10 папок для проверки
-                    int count = 0;
-                    foreach (var folder in folderMapping.folders) {
-                        Debug.Log($"  {folder.id}: {folder.name} -> {folder.path}");
-                        if (++count >= 10) break;
-                    }
-                };
             }
 
             if (GUILayout.Button("Full Import Pipeline", GUILayout.Height(30))) {
@@ -444,6 +382,14 @@ namespace Assets.Editor.PlayCanvas {
             }
             // НЕ очищаем папки здесь, чтобы сохранить данные между сессиями
             // folderMapping.folders.Clear();
+
+            // Asset mapping
+            string assetMappingFullPath = $"Assets/{cleanFolderName}/{assetMappingPath}";
+            assetIDMapping = AssetDatabase.LoadAssetAtPath<AssetIDMapping>(assetMappingFullPath);
+            if (assetIDMapping == null) {
+                assetIDMapping = ScriptableObject.CreateInstance<AssetIDMapping>();
+                AssetDatabase.CreateAsset(assetIDMapping, assetMappingFullPath);
+            }
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
@@ -1413,6 +1359,11 @@ namespace Assets.Editor.PlayCanvas {
             if (!string.IsNullOrEmpty(pcAsset.hash) && !string.IsNullOrEmpty(cached.hash)) {
                 return pcAsset.hash == cached.hash ? AssetStatus.UpToDate : AssetStatus.Outdated;
             }
+
+            string mappedPath = assetIDMapping.GetAssetPath(playCanvasId);
+            if (!string.IsNullOrEmpty(mappedPath) && File.Exists(mappedPath)) {
+                return AssetStatus.UpToDate;     // ассет уже есть, перескачивать не нужно
+            }
             
             // Приоритет 2: Проверка по дате модификации И размеру
             if (pcAsset.modifiedAt.HasValue && cached.lastModified < pcAsset.modifiedAt.Value) {
@@ -1750,6 +1701,9 @@ namespace Assets.Editor.PlayCanvas {
                 EditorUtility.ClearProgressBar();
             }
             
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+
             Debug.Log($"Assets applied: {successCount} successful, {failCount} failed");
         }
 
@@ -2478,14 +2432,12 @@ namespace Assets.Editor.PlayCanvas {
                 // Обновляем кеш
                 assetCache.entries[task.assetId] = new AssetCacheEntry {
                     playCanvasId = task.assetId,
-                    localPath = task.targetPath,
-                    hash = task.asset.hash,
+                    localPath    = task.targetPath,
+                    hash         = task.asset.hash,
                     lastModified = task.asset.modifiedAt ?? DateTime.Now,
-                    fileSize = content.Length,
+                    fileSize     = content.Length,
                     downloadedAt = DateTime.Now,
-                    usageCount = collectedModels.ContainsKey(task.assetId) 
-                        ? collectedModels[task.assetId].usedByEntities.Count 
-                        : 1
+                    usageCount   = collectedModels.ContainsKey(task.assetId) ? collectedModels[task.assetId].usedByEntities.Count : 1
                 };
                 
                 if (showDebugLogs) {
