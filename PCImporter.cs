@@ -387,6 +387,7 @@ namespace Assets.Editor.PlayCanvas {
             string assetMappingFullPath = $"Assets/{cleanFolderName}/{assetMappingPath}";
             assetIDMapping = AssetDatabase.LoadAssetAtPath<AssetIDMapping>(assetMappingFullPath);
             if (assetIDMapping == null) {
+                Debug.Log("Creating new AssetIDMapping asset");
                 assetIDMapping = ScriptableObject.CreateInstance<AssetIDMapping>();
                 AssetDatabase.CreateAsset(assetIDMapping, assetMappingFullPath);
             }
@@ -1360,9 +1361,9 @@ namespace Assets.Editor.PlayCanvas {
                 return pcAsset.hash == cached.hash ? AssetStatus.UpToDate : AssetStatus.Outdated;
             }
 
-            string mappedPath = assetIDMapping.GetAssetPath(playCanvasId);
-            if (!string.IsNullOrEmpty(mappedPath) && File.Exists(mappedPath)) {
-                return AssetStatus.UpToDate;     // ассет уже есть, перескачивать не нужно
+            string existingPath = assetIDMapping.GetAssetPath(playCanvasId);
+            if (!string.IsNullOrEmpty(existingPath)){
+                return AssetDatabase.LoadAssetAtPath<Object>(existingPath);
             }
             
             // Приоритет 2: Проверка по дате модификации И размеру
