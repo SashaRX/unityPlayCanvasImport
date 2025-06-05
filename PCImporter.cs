@@ -1341,43 +1341,43 @@ namespace Assets.Editor.PlayCanvas {
             usage.usedByPaths.Add(path);
         }
 
-        private AssetStatus CheckAssetStatus(int assetId, PCAsset pcAsset) {
-            // Инициализируем кеш если еще не загружен
+        private AssetStatus CheckAssetStatus(int assetId, PCAsset pcAsset){
+            // Загружаем кеш при первом обращении
             assetCache ??= AssetCache.Load(AssetCachePath);
-            
+
+            // 0) Записи нет ─ значит ассет ещё не скачивали
             if (!assetCache.entries.TryGetValue(assetId, out AssetCacheEntry cached)) {
-                if (showDebugLogs) Debug.Log($"Asset {assetId} not in cache - status: NotDownloaded");
+                if (showDebugLogs) Debug.Log($"Asset {assetId} not in cache – NotDownloaded");
                 return AssetStatus.NotDownloaded;
             }
-            
-            // Проверяем существование файла
+
+            // 1) Файл исчез из-под Unity
             if (!File.Exists(cached.localPath)) {
-                if (showDebugLogs) Debug.Log($"Asset {assetId} file missing - status: Corrupted");
+                if (showDebugLogs) Debug.Log($"Asset {assetId} lost on disk – Corrupted");
                 return AssetStatus.Corrupted;
-            }
-            
-            // Приоритет 1: Проверка по hash (самая надежная)
-            if (!string.IsNullOrEmpty(pcAsset.hash) && !string.IsNullOrEmpty(cached.hash)) {
-                return pcAsset.hash == cached.hash ? AssetStatus.UpToDate : AssetStatus.Outdated;
             }
 
-            string existingPath = assetIDMapping.GetAssetPath(playCanvasId);
-            if (!string.IsNullOrEmpty(existingPath)){
-                return AssetDatabase.LoadAssetAtPath<Object>(existingPath);
+            // 2) Самый надёжный способ – сверяем hash-сумму
+            if (!string.IsNullOrEmpty(pcAsset.hash) && !string.IsNullOrEmpty(cached.hash))
+                return pcAsset.hash == cached.hash ? AssetStatus.UpToDate : AssetStatus.Outdated;
+
+            // 3) Уже импортирован и прописан в AssetIDMapping → считаем актуальным
+            string existingPath = assetIDMapping.GetPathById(assetId);        // правильный метод и ID
+            if (!string.IsNullOrEmpty(existingPath) && File.Exists(existingPath)){
+                return AssetStatus.UpToDate;                                   // метод должен вернуть статус
             }
-            
-            // Приоритет 2: Проверка по дате модификации И размеру
-            if (pcAsset.modifiedAt.HasValue && cached.lastModified < pcAsset.modifiedAt.Value) {
+
+            // 4) Файл более свежий на сервере
+            if (pcAsset.modifiedAt.HasValue && cached.lastModified < pcAsset.modifiedAt.Value)
                 return AssetStatus.Outdated;
-            }
-            
-            // Приоритет 3: Проверка размера файла
-            FileInfo fileInfo = new(cached.localPath);
-            if (fileInfo.Length != cached.fileSize) {
+
+            // 5) Размер не совпал с кешом
+            FileInfo fi = new(cached.localPath);
+            if (fi.Length != cached.fileSize)
                 return AssetStatus.Corrupted;
-            }
-            
-            if (showDebugLogs) Debug.Log($"Asset {assetId} - status: UpToDate");
+
+            // Всё ок
+            if (showDebugLogs) Debug.Log($"Asset {assetId} – UpToDate");
             return AssetStatus.UpToDate;
         }
 
@@ -1412,6 +1412,9 @@ namespace Assets.Editor.PlayCanvas {
                     Debug.LogError($"Failed to process model {modelId}");
                 }
             }
+
+            EditorUtility.SetDirty(assetIDMapping);
+            AssetDatabase.SaveAssets();
         }
 
         private ProcessedAsset ProcessFBXAsset(int modelId, string fbxPath) {
@@ -1454,9 +1457,10 @@ namespace Assets.Editor.PlayCanvas {
                 };
             }
             
-            return new ProcessedAsset {
-                prefab    = fbxPrefab,
-                mesh      = mesh,
+            assetIDMapping.Register(modelId, AssetIDMapping.AssetType.Model, fbxPrefab);
+            return new ProcessedAsset{
+                prefab = fbxPrefab,
+                mesh = mesh,
                 materials = materials,
                 submeshNames = GetSubmeshNames(mesh)
             };
@@ -1591,6 +1595,7 @@ namespace Assets.Editor.PlayCanvas {
             
             string fullPath = $"{matPath}/{safeName}.mat";
             AssetDatabase.CreateAsset(mat, fullPath);
+            assetIDMapping.Register(materialId, AssetIDMapping.AssetType.Material, mat);
             
             if (showDebugLogs) {
                 Debug.Log($"Created material {safeName} at {fullPath}");
@@ -2634,6 +2639,7 @@ namespace Assets.Editor.PlayCanvas {
             Texture2D texture = AssetDatabase.LoadAssetAtPath<Texture2D>(cached.localPath);
             if (texture == null) {
                 Debug.LogError($"Failed to load texture from {cached.localPath}");
+                assetIDMapping.Register(textureId, AssetIDMapping.AssetType.Texture, texture);
             }
             
             return texture;
