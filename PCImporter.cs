@@ -80,6 +80,8 @@ namespace Assets.Editor.PlayCanvas {
         [NonSerialized]
         private Dictionary<int, AssetUsageInfo> collectedRenderAssets = new();
 
+        private static Dictionary<PrimitiveType, Mesh> primitiveCache = new();
+
         private Dictionary<int, string> materialPathCache = new();
         private Dictionary<int, PCAsset> allAssetsCache = null;
         private Dictionary<int, PCAsset> allAssets = null;
@@ -1578,15 +1580,16 @@ namespace Assets.Editor.PlayCanvas {
             mat.SetFloat("_Smoothness", gloss);
             mat.SetFloat("_Metallic", metalic);
 
-            // ИСПРАВЛЕНИЕ: Используем правильный путь для сохранения
+            // ИСПРАВЛЕНИЕ: Определяем путь для сохранения
             string matPath;
-            if (!string.IsNullOrEmpty(folderPath)) {
-                // Используем путь из PlayCanvas
-                matPath = Path.Combine("Assets", folderName, folderPath).Replace('\\', '/');
-            } else {
-                // Fallback на дефолтную папку Materials
-                matPath = $"Assets/{folderName}/Materials";
+            
+            // Если путь не передан, получаем его из кеша
+            if (string.IsNullOrEmpty(folderPath)) {
+                folderPath = GetMaterialFolderPath(materialId);
             }
+            
+            // Используем путь из PlayCanvas
+            matPath = Path.Combine("Assets", folderName, folderPath).Replace('\\', '/');
             
             // Создаем папку если её нет
             if (!AssetDatabase.IsValidFolder(matPath)) {
@@ -1595,7 +1598,6 @@ namespace Assets.Editor.PlayCanvas {
             
             string fullPath = $"{matPath}/{safeName}.mat";
             AssetDatabase.CreateAsset(mat, fullPath);
-            assetIDMapping.Register(materialId, AssetIDMapping.AssetType.Material, mat);
             
             if (showDebugLogs) {
                 Debug.Log($"Created material {safeName} at {fullPath}");
@@ -1621,23 +1623,16 @@ namespace Assets.Editor.PlayCanvas {
         private string GetMaterialFolderPath(int materialId) {
             Debug.Log($"=== GetMaterialFolderPath for material {materialId} ===");
             
-            // НОВОЕ: Проверяем в allAssetsCache, где у материалов есть folder (parent)
+            // Проверяем в allAssetsCache
             if (allAssetsCache != null && allAssetsCache.TryGetValue(materialId, out PCAsset materialAsset)) {
                 string folderPath = GetPlayCanvasFolderPath(materialAsset.folder);
                 Debug.Log($"Material {materialId} '{materialAsset.name}' has folder {materialAsset.folder} -> path: '{folderPath}'");
                 return folderPath;
-            } else {
-                Debug.Log($"Material {materialId} not found in allAssetsCache");
             }
             
-            // Проверяем в materialPathCache
-            if (materialPathCache.TryGetValue(materialId, out string cachedPath)) {
-                Debug.Log($"Found cached path for material {materialId}: {cachedPath}");
-                return cachedPath;
-            }
-            
-            Debug.LogWarning($"No path found for material {materialId}, returning null");
-            return null;
+            // Если материал не найден в кеше, возвращаем путь по умолчанию
+            Debug.LogWarning($"Material {materialId} not found in cache, using default path");
+            return "content/materials"; // Дефолтный путь как в PlayCanvas
         }
 
         private int ExtractAssetId(object renderData) {
@@ -1931,11 +1926,13 @@ namespace Assets.Editor.PlayCanvas {
                         for (int i = 0; i < materialsDataArray.Count; i++) {
                             JToken matData = materialsDataArray[i];
                             int matId = matData["id"].Value<int>();
-                            materials[i] = CreateMaterialFromPlayCanvas(matId, matData);
+                            
+                            // Получаем правильный путь для материала
+                            string matFolderPath = GetMaterialFolderPath(matId);
+                            materials[i] = CreateMaterialFromPlayCanvas(matId, matData, matFolderPath);
                         }
                         meshRenderer.sharedMaterials = materials;
-                    }
-                    else {
+                    } else {
                         // Fallback на materialAssets
                         List<int> materialIds = new();
                         if (jObj["materialAssets"] is JArray matArray) {
@@ -1971,8 +1968,6 @@ namespace Assets.Editor.PlayCanvas {
                 return false;
             }
         }
-
-        private static Dictionary<PrimitiveType, Mesh> primitiveCache = new();
 
         private static Mesh GetPrimitiveMeshScaled(PrimitiveType type) {
             Mesh originalMesh = GetPrimitiveMesh(type);
@@ -2539,13 +2534,13 @@ namespace Assets.Editor.PlayCanvas {
                                 id = assetId,
                                 name = (string)item["name"],
                                 type = assetType,
-                                folder = 0, // Значение по умолчанию
+                                folder = 0,
                                 modifiedAt = null
                             };
                             
                             JToken parentToken = item["parent"];
                             if (parentToken != null && parentToken.Type != JTokenType.Null) {
-                                asset.folder = parentToken.Value<int>(); // Это и есть ID папки!
+                                asset.folder = parentToken.Value<int>();
                             }
                             
                             string modifiedAtStr = (string)item["modifiedAt"];
