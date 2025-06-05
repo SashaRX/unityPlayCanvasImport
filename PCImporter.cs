@@ -261,6 +261,32 @@ namespace Assets.Editor.PlayCanvas {
                 EditorGUILayout.HelpBox($"Cached assets: {assetCache.entries.Count}", MessageType.Info);
             }
 
+            /*if (GUILayout.Button("Debug Folder Structure")) {
+                Debug.Log("=== Folder Structure Debug ===");
+                
+                // Проверяем FolderMapping
+                Debug.Log($"Total folders in mapping: {folderMapping.folders.Count}");
+                foreach (var folder in folderMapping.folders.Take(20)) {
+                    Debug.Log($"Folder {folder.id}: '{folder.name}' -> '{folder.path}'");
+                }
+                
+                // Проверяем конкретные папки из примера
+                int[] testFolderIds = { 131129397, 133166066 };
+                foreach (int folderId in testFolderIds) {
+                    string path = GetPlayCanvasFolderPath(folderId);
+                    Debug.Log($"Folder {folderId} resolves to: '{path}'");
+                }
+                
+                // Проверяем материалы
+                if (allAssetsCache != null) {
+                    var materials = allAssetsCache.Values.Where(a => a.type == "material").Take(10);
+                    foreach (var mat in materials) {
+                        string folderPath = GetPlayCanvasFolderPath(mat.folder);
+                        Debug.Log($"Material '{mat.name}' (ID: {mat.id}) in folder {mat.folder} -> path: '{folderPath}'");
+                    }
+                }
+            }*/
+
             if (GUILayout.Button("Debug API Response")) {
                 EditorApplication.delayCall += async () => {
                     string url = $"https://playcanvas.com/api/projects/{projectId}/assets?branchId={branchId}&limit=5";
@@ -270,7 +296,7 @@ namespace Assets.Editor.PlayCanvas {
                     
                     try {
                         string json = await client.GetStringAsync(url);
-                        Debug.Log($"Raw API Response (first 1000 chars):\n{json[..Math.Min(1000, json.Length)]}");
+                        Debug.Log($"Raw API Response (first 1000 chars):\n{json.Substring(0, Math.Min(1000, json.Length))}");
                         
                         JObject root = JObject.Parse(json);
                         if (root["result"] is JArray resultArray) {
@@ -283,6 +309,12 @@ namespace Assets.Editor.PlayCanvas {
                         Debug.LogError($"Debug failed: {ex.Message}");
                     }
                 };
+            }
+
+            if (folderMapping != null) {
+                EditorGUILayout.HelpBox($"Folder mapping status: {folderMapping.folders.Count} folders loaded", MessageType.Info);
+            } else {
+                EditorGUILayout.HelpBox("Folder mapping is null!", MessageType.Error);
             }
 
             if (GUILayout.Button("Test Load Folders Only")) {
@@ -381,7 +413,6 @@ namespace Assets.Editor.PlayCanvas {
                 string parentFolder = "Assets";
                 string newFolder = cleanFolderName;
                 
-                // Ensure we can create the folder
                 if (!AssetDatabase.IsValidFolder(parentFolder)) {
                     Debug.LogError($"Cannot create folder {folderPath} - parent folder {parentFolder} is invalid");
                     return;
@@ -394,7 +425,7 @@ namespace Assets.Editor.PlayCanvas {
                 }
             }
 
-            // Now create or load the mappings
+            // Entity mapping
             string entityMappingFullPath = $"Assets/{cleanFolderName}/{entityMappingPath}";
             entityMapping = AssetDatabase.LoadAssetAtPath<EntityIDMapping>(entityMappingFullPath);
             if (entityMapping == null) {
@@ -403,18 +434,21 @@ namespace Assets.Editor.PlayCanvas {
             }
             entityMapping.entries.Clear();
 
+            // Folder mapping - ВАЖНО!
             string folderMappingFullPath = $"Assets/{cleanFolderName}/{folderMappingPath}";
             folderMapping = AssetDatabase.LoadAssetAtPath<FolderMapping>(folderMappingFullPath);
             if (folderMapping == null) {
+                Debug.Log("Creating new FolderMapping asset");
                 folderMapping = ScriptableObject.CreateInstance<FolderMapping>();
                 AssetDatabase.CreateAsset(folderMapping, folderMappingFullPath);
             }
-            folderMapping.folders.Clear();
+            // НЕ очищаем папки здесь, чтобы сохранить данные между сессиями
+            // folderMapping.folders.Clear();
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
 
-            if (showDebugLogs) Debug.Log("Mappings initialized.");
+            Debug.Log($"Mappings initialized. FolderMapping has {folderMapping.folders.Count} entries");
         }
 
         #region SceneStatistics
@@ -1115,7 +1149,7 @@ namespace Assets.Editor.PlayCanvas {
             collectedRenderAssets.Clear();
             modelToMaterialsMap.Clear();
             materialToTexturesMap.Clear();
-            materialPathCache.Clear(); // Очищаем кеш путей
+            materialPathCache.Clear();
             
             // Собираем зависимости 
             CollectFromEntity(rootEntity, "");
@@ -1126,7 +1160,11 @@ namespace Assets.Editor.PlayCanvas {
                 Debug.Log($"Render Assets: {collectedRenderAssets.Count}");
                 Debug.Log($"Materials: {collectedMaterials.Count}");
                 Debug.Log($"Textures: {collectedTextures.Count}");
-                Debug.Log($"Material paths cached: {materialPathCache.Count}");
+                
+                // Выводим первые несколько текстур для отладки
+                foreach (var tex in collectedTextures.Take(5)) {
+                    Debug.Log($"  Texture {tex.Key}: used by {tex.Value.usedByEntities.Count} entities");
+                }
             }
         }
 
@@ -1309,22 +1347,17 @@ namespace Assets.Editor.PlayCanvas {
                             int? opacityMap = matData["opacityMap"]?.Value<int?>();
                             int? emissiveMap = matData["emissiveMap"]?.Value<int?>();
                             
-                            if (diffuseMap.HasValue && diffuseMap.Value != 0) 
+                            if (diffuseMap.HasValue && diffuseMap.Value != 0) {
                                 textureIds.Add(diffuseMap.Value);
-                            if (opacityMap.HasValue && opacityMap.Value != 0) 
+                                Debug.Log($"Found texture {diffuseMap.Value} in model {entity.name}");
+                            }
+                            if (opacityMap.HasValue && opacityMap.Value != 0) {
                                 textureIds.Add(opacityMap.Value);
-                            if (emissiveMap.HasValue && emissiveMap.Value != 0) 
+                            }
+                            if (emissiveMap.HasValue && emissiveMap.Value != 0) {
                                 textureIds.Add(emissiveMap.Value);
+                            }
                         }
-                    }
-                }
-                else if (modelObj is ModelComponent modelComp) {
-                    if (modelComp.asset != null) {
-                        modelId = modelComp.asset.ToString() switch {
-                            not null and string str when int.TryParse(str, out int parsedId) 
-                                => parsedId,
-                            _ => 0
-                        };
                     }
                 }
             }
@@ -1339,20 +1372,12 @@ namespace Assets.Editor.PlayCanvas {
                 
                 if (materialIds.Count > 0) {
                     modelToMaterialsMap[modelId] = materialIds;
-                    
-                    // НОВОЕ: Сохраняем путь для материалов на основе модели
-                    if (allAssets != null && allAssets.TryGetValue(modelId, out PCAsset modelAsset)) {
-                        string folderPath = GetPlayCanvasFolderPath(modelAsset.folder);
-                        foreach (int matId in materialIds) {
-                            RegisterAsset(collectedMaterials, matId, "material", entity.id, path);
-                            materialPathCache[matId] = folderPath;
-                        }
-                    } else {
-                        foreach (int matId in materialIds) {
-                            RegisterAsset(collectedMaterials, matId, "material", entity.id, path);
-                        }
-                    }
                 }
+            }
+            
+            // Регистрируем текстуры
+            foreach (int texId in textureIds) {
+                RegisterAsset(collectedTextures, texId, "texture", entity.id, path);
             }
         }
         
@@ -1383,7 +1408,7 @@ namespace Assets.Editor.PlayCanvas {
                 if (showDebugLogs) Debug.Log($"Asset {assetId} file missing - status: Corrupted");
                 return AssetStatus.Corrupted;
             }
-             
+            
             // Приоритет 1: Проверка по hash (самая надежная)
             if (!string.IsNullOrEmpty(pcAsset.hash) && !string.IsNullOrEmpty(cached.hash)) {
                 return pcAsset.hash == cached.hash ? AssetStatus.UpToDate : AssetStatus.Outdated;
@@ -1636,51 +1661,25 @@ namespace Assets.Editor.PlayCanvas {
             }
         }
 
-        /// <summary>
-        /// Gets the folder path for a specified material ID.
-        /// </summary>
-        /// <param name="materialId">The ID of the material.</param>
-        /// <returns>The folder path for the material, or null if not found.</returns>
         private string GetMaterialFolderPath(int materialId) {
-            // Сначала проверяем наш кеш путей
+            Debug.Log($"=== GetMaterialFolderPath for material {materialId} ===");
+            
+            // НОВОЕ: Проверяем в allAssetsCache, где у материалов есть folder (parent)
+            if (allAssetsCache != null && allAssetsCache.TryGetValue(materialId, out PCAsset materialAsset)) {
+                string folderPath = GetPlayCanvasFolderPath(materialAsset.folder);
+                Debug.Log($"Material {materialId} '{materialAsset.name}' has folder {materialAsset.folder} -> path: '{folderPath}'");
+                return folderPath;
+            } else {
+                Debug.Log($"Material {materialId} not found in allAssetsCache");
+            }
+            
+            // Проверяем в materialPathCache
             if (materialPathCache.TryGetValue(materialId, out string cachedPath)) {
                 Debug.Log($"Found cached path for material {materialId}: {cachedPath}");
                 return cachedPath;
             }
-
-            // Пробуем определить путь напрямую через список ассетов
-            if (allAssets != null && allAssets.TryGetValue(materialId, out PCAsset matAsset)) {
-                string pcPath = GetPlayCanvasFolderPath(matAsset.folder);
-                if (!string.IsNullOrEmpty(pcPath)) {
-                    materialPathCache[materialId] = pcPath;
-                    Debug.Log($"Material {materialId} path resolved from asset list: {pcPath}");
-                    return pcPath;
-                }
-            }
             
-            // Если не нашли в кеше путей, ищем через модели
-            foreach (KeyValuePair<int, AssetUsageInfo> modelEntry in collectedModels) {
-                if (modelToMaterialsMap.TryGetValue(modelEntry.Key, out List<int> materials) && materials.Contains(materialId)) {
-                    // Нашли модель, которая использует этот материал
-                    if (assetCache?.entries.TryGetValue(modelEntry.Key, out AssetCacheEntry modelCache) == true) {
-                        string dirPath = Path.GetDirectoryName(modelCache.localPath).Replace('\\', '/');
-                        string prefix = $"Assets/{folderName}/";
-                        if (dirPath.StartsWith(prefix)) {
-                            string result = dirPath.Substring(prefix.Length);
-                            Debug.Log($"Found path for material {materialId} from model {modelEntry.Key}: {result}");
-                            return result;
-                        }
-                    }
-                }
-            }
-            
-            // Проверяем через render assets
-            foreach (KeyValuePair<int, AssetUsageInfo> renderEntry in collectedRenderAssets) {
-                // Тут нужно проверить, использует ли render asset этот материал
-                // Это сложнее, так как нужен доступ к оригинальным данным
-            }
-            
-            Debug.LogWarning($"No path found for material {materialId}, using default");
+            Debug.LogWarning($"No path found for material {materialId}, returning null");
             return null;
         }
 
@@ -1794,7 +1793,7 @@ namespace Assets.Editor.PlayCanvas {
                         JToken matData = materialsDataArray[i];
                         int matId = matData["id"].Value<int>();
                         
-                        // ИСПРАВЛЕНИЕ: Получаем путь папки для материала
+                        // Получаем путь папки для материала из его собственного parent
                         string matFolderPath = GetMaterialFolderPath(matId);
                         materials[i] = CreateMaterialFromPlayCanvas(matId, matData, matFolderPath);
                     }
@@ -1895,17 +1894,13 @@ namespace Assets.Editor.PlayCanvas {
                         JToken matData = materialsDataArray[i];
                         int matId = matData["id"].Value<int>();
                         
-                        // ИСПРАВЛЕНИЕ: Получаем путь папки для материала
+                        // Получаем путь папки для материала
                         string matFolderPath = GetMaterialFolderPath(matId);
+                        Debug.Log($"Creating material {matId} in folder: '{matFolderPath}'");
+                        
                         materials[i] = CreateMaterialFromPlayCanvas(matId, matData, matFolderPath);
                     }
                     meshRenderer.sharedMaterials = materials;
-                }else {
-                    // Fallback на материалы из FBX
-                    Debug.Log($"Using FBX materials: {processed.materials?.Length ?? 0}");
-                    if (processed.materials != null && processed.materials.Length > 0) {
-                        meshRenderer.sharedMaterials = processed.materials;
-                    }
                 }
                 
                 Debug.Log($"Successfully applied model to {obj.name}");
@@ -2077,7 +2072,7 @@ namespace Assets.Editor.PlayCanvas {
             
             string extension = asset.type switch {
                 "model" => ".fbx",
-                "material" => ".mat", 
+                "material" => ".mat",
                 "texture" => Path.GetExtension(asset.filename) ?? ".png",
                 _ => Path.GetExtension(asset.filename) ?? ""
             };
@@ -2091,7 +2086,7 @@ namespace Assets.Editor.PlayCanvas {
             
             return Path.Combine("Assets", folderName, folderPath, filename).Replace('\\', '/');
         }
-
+        
         private async Task<Dictionary<int, string>> FetchFoldersFromAPI() {
             Dictionary<int, string> folderPaths = new();
             
@@ -2135,7 +2130,6 @@ namespace Assets.Editor.PlayCanvas {
                     
                     Debug.Log($"Total folders found: {allFolders.Count}, root folders: {rootFolders.Count}");
                     
-                    // Остальной код без изменений...
                     // Шаг 2: Строим дерево папок
                     foreach (var folder in allFolders.Values) {
                         if (folder.parentId.HasValue && folder.parentId.Value != 0) {
@@ -2143,6 +2137,7 @@ namespace Assets.Editor.PlayCanvas {
                                 parent.children.Add(folder);
                             } else {
                                 Debug.LogWarning($"Parent folder {folder.parentId} not found for folder {folder.name}");
+                                // Если родитель не найден, считаем папку корневой
                                 rootFolders.Add(folder);
                             }
                         }
@@ -2156,6 +2151,10 @@ namespace Assets.Editor.PlayCanvas {
                     // Шаг 4: Сохраняем в FolderMapping
                     foreach (var kvp in folderPaths) {
                         folderMapping.AddFolder(kvp.Key, allFolders[kvp.Key].name, kvp.Value);
+                        
+                        if (showDebugLogs) {
+                            Debug.Log($"Folder mapping: ID {kvp.Key} -> {kvp.Value}");
+                        }
                     }
                     
                     Debug.Log($"Loaded {folderPaths.Count} folder paths from PlayCanvas");
@@ -2165,6 +2164,7 @@ namespace Assets.Editor.PlayCanvas {
                 Debug.LogError($"Failed to fetch folders: {ex.Message}\n{ex.StackTrace}");
             }
             
+            // Сохраняем изменения
             EditorUtility.SetDirty(folderMapping);
             AssetDatabase.SaveAssets();
             
@@ -2179,6 +2179,11 @@ namespace Assets.Editor.PlayCanvas {
             
             folder.fullPath = currentPath;
             result[folder.id] = currentPath;
+            
+            // ОТЛАДКА
+            if (showDebugLogs && result.Count < 10) {
+                Debug.Log($"Built path for folder {folder.id} ({folder.name}): '{currentPath}'");
+            }
             
             // Рекурсивно обрабатываем детей
             foreach (var child in folder.children) {
@@ -2228,24 +2233,31 @@ namespace Assets.Editor.PlayCanvas {
             // Получаем список всех ассетов из API
             Dictionary<int, PCAsset> allAssets = await FetchAssetsListFromAPI();
             
-            // ДОБАВИТЬ ОТЛАДКУ
             Debug.Log($"Fetched {allAssets.Count} assets from API");
             Debug.Log($"Looking for {collectedModels.Count} models");
             
-            // Создаем задачи загрузки с приоритетами
+            // Создаем задачи загрузки
             List<DownloadTask> downloadTasks = new();
             
-            // 1. Обрабатываем модели FIRST
+            // Обрабатываем модели
             foreach (KeyValuePair<int, AssetUsageInfo> modelInfo in collectedModels) {
                 if (!allAssets.TryGetValue(modelInfo.Key, out PCAsset pcAsset)) {
                     Debug.LogWarning($"Model {modelInfo.Key} not found in API response");
                     continue;
                 }
                 
+                Debug.Log($"Checking model {pcAsset.id} '{pcAsset.name}' - URL: {pcAsset.url}");
+                
                 AssetStatus status = CheckAssetStatus(modelInfo.Key, pcAsset);
+                Debug.Log($"Model {pcAsset.id} status: {status}");
                 
                 if (status != AssetStatus.UpToDate) {
                     string downloadUrl = pcAsset.url;
+                    
+                    if (string.IsNullOrEmpty(downloadUrl)) {
+                        Debug.LogWarning($"Model {pcAsset.id} has no download URL");
+                        continue;
+                    }
                     
                     // Проверяем URL перед трансформацией
                     if (pcAsset.type == "model" && pcAsset.sourceId != 0) {
@@ -2256,53 +2268,37 @@ namespace Assets.Editor.PlayCanvas {
                     
                     DownloadTask task = new() {
                         assetId = pcAsset.id,
-                        asset   = pcAsset,
+                        asset = pcAsset,
                         downloadUrl = downloadUrl,
                         targetPath = GetAssetPath(pcAsset),
                         priority = CalculatePriority(pcAsset, modelInfo.Value.usedByEntities.Count)
                     };
                     downloadTasks.Add(task);
-                    Debug.Log($"Added model {pcAsset.id} to download queue");
+                    Debug.Log($"Added model {pcAsset.id} to download queue - target: {task.targetPath}");
                 }
             }
             
-            // 2. Затем обрабатываем render assets
-            foreach (KeyValuePair<int, AssetUsageInfo> renderInfo in collectedRenderAssets) {
-                if (!allAssets.TryGetValue(renderInfo.Key, out PCAsset pcAsset)) {
-                    Debug.LogWarning($"Render asset {renderInfo.Key} not found in API response");
+            // Аналогично для текстур
+            foreach (KeyValuePair<int, AssetUsageInfo> textureInfo in collectedTextures) {
+                if (!allAssets.TryGetValue(textureInfo.Key, out PCAsset pcAsset)) {
+                    Debug.LogWarning($"Texture {textureInfo.Key} not found in API response");
                     continue;
                 }
-
-                AssetStatus status = CheckAssetStatus(renderInfo.Key, pcAsset);
+                
+                AssetStatus status = CheckAssetStatus(textureInfo.Key, pcAsset);
                 
                 if (status != AssetStatus.UpToDate) {
-                    // Для render assets URL может отличаться
-                    string downloadUrl = pcAsset.url;
-                    
-                    // Проверяем URL перед трансформацией
-                    if (pcAsset.type == "model" && pcAsset.sourceId != 0) {
-                        string originalUrl = pcAsset.url;
-                        downloadUrl = TransformGLBtoFBXAssetUrl(originalUrl, pcAsset.sourceId);
-                        Debug.Log($"Transformed URL: {originalUrl} -> {downloadUrl}");
-                    }
-                    
-                    if (pcAsset.type == "render" && string.IsNullOrEmpty(downloadUrl)) {
-                        Debug.Log($"Render asset {pcAsset.id} will be extracted from container");
-                        continue;
-                    }
-
-                    DownloadTask task = new() {
-                        assetId     = pcAsset.id,
-                        asset       = pcAsset,
-                        downloadUrl = downloadUrl,
-                        targetPath  = GetAssetPath(pcAsset),
-                        priority    = CalculatePriority(pcAsset, renderInfo.Value.usedByEntities.Count)
-                    };
-                    downloadTasks.Add(task);
-                    Debug.Log($"Added render asset {pcAsset.id} to download queue");
+                    downloadTasks.Add(new DownloadTask {
+                        assetId = pcAsset.id,
+                        asset = pcAsset,
+                        downloadUrl = pcAsset.url,
+                        targetPath = GetAssetPath(pcAsset),
+                        priority = CalculatePriority(pcAsset, textureInfo.Value.usedByEntities.Count) * 1.5f
+                    });
+                    Debug.Log($"Added texture {pcAsset.id} to download queue");
                 }
             }
-
+            
             Debug.Log($"Total download tasks: {downloadTasks.Count}");
             
             // 3. Анализируем материалы и текстуры
@@ -2547,6 +2543,9 @@ namespace Assets.Editor.PlayCanvas {
             Debug.Log("Loading folder structure from PlayCanvas...");
             await FetchFoldersFromAPI();
             
+            // Проверяем результат
+            Debug.Log($"Folders loaded: {folderMapping.folders.Count}");
+            
             string url = $"https://playcanvas.com/api/projects/{projectId}/assets?branchId={branchId}&skip=0&limit=10000";
             
             using (HttpClient client = new()) {
@@ -2586,13 +2585,11 @@ namespace Assets.Editor.PlayCanvas {
                                 modifiedAt = null
                             };
                             
-                            // ИСПРАВЛЕНИЕ: Безопасное извлечение parent/folder
                             JToken parentToken = item["parent"];
                             if (parentToken != null && parentToken.Type != JTokenType.Null) {
-                                asset.folder = parentToken.Value<int>();
+                                asset.folder = parentToken.Value<int>(); // Это и есть ID папки!
                             }
                             
-                            // ИСПРАВЛЕНИЕ: Безопасное извлечение даты
                             string modifiedAtStr = (string)item["modifiedAt"];
                             if (!string.IsNullOrEmpty(modifiedAtStr) && DateTime.TryParse(modifiedAtStr, out DateTime dt)) {
                                 asset.modifiedAt = dt;
@@ -2730,7 +2727,8 @@ namespace Assets.Editor.PlayCanvas {
             }
         }
 
-        private Task AnalyzeMaterialsAndTextures(Dictionary<int, PCAsset> allAssets, List<DownloadTask> downloadTasks) {
+        private async Task AnalyzeMaterialsAndTextures(Dictionary<int, PCAsset> allAssets, List<DownloadTask> downloadTasks) {
+            // Анализируем текстуры
             foreach (KeyValuePair<int, AssetUsageInfo> textureInfo in collectedTextures) {
                 if (!allAssets.TryGetValue(textureInfo.Key, out PCAsset pcAsset)) continue;
                 
@@ -2745,9 +2743,6 @@ namespace Assets.Editor.PlayCanvas {
                     });
                 }
             }
-
-            return Task.CompletedTask;
-
         }
 
         #region Math
