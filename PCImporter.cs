@@ -220,7 +220,7 @@ namespace Assets.Editor.PlayCanvas {
         private void DelayedInitialization() {
             EditorApplication.delayCall -= DelayedInitialization;
             
-            statsInitialized = false;
+            //statsInitialized = false;
             nickname = EditorPrefs.GetString("PlayCanvas_Nickname", "");
             tokenId = EditorPrefs.GetString("PlayCanvas_TokenID", "");
             projectId = EditorPrefs.GetString("PlayCanvas_ProjectID", "");
@@ -1895,17 +1895,8 @@ namespace Assets.Editor.PlayCanvas {
                 if (!processedAssets.TryGetValue(assetId, out ProcessedAsset processed)) {
                     Debug.LogWarning($"No processed asset for ID {assetId} on {obj.name}");
                     
-                    // ИСПРАВЛЕНИЕ: Правильное создание компонентов
-                    MeshFilter meshFilter = obj.GetComponent<MeshFilter>();
-                    if (meshFilter == null) {
-                        meshFilter = obj.AddComponent<MeshFilter>();
-                    }
+                    // Используем существующие переменные без переобъявления
                     meshFilter.sharedMesh = GetPrimitiveMesh(PrimitiveType.Cube);
-                    
-                    MeshRenderer meshRenderer = obj.GetComponent<MeshRenderer>();
-                    if (meshRenderer == null) {
-                        meshRenderer = obj.AddComponent<MeshRenderer>();
-                    }
                     meshRenderer.sharedMaterial = new Material(Shader.Find("Universal Render Pipeline/Lit")) {
                         name = "Missing_Material"
                     };
@@ -2285,9 +2276,9 @@ namespace Assets.Editor.PlayCanvas {
                     foreach (var kvp in folderPaths) {
                         folderMapping.AddFolder(kvp.Key, allFolders[kvp.Key].name, kvp.Value);
                         
-                        if (showDebugLogs) {
-                            Debug.Log($"Folder mapping: ID {kvp.Key} -> {kvp.Value}");
-                        }
+                        //if (showDebugLogs) {
+                        //    Debug.Log($"Folder mapping: ID {kvp.Key} -> {kvp.Value}");
+                        //}
                     }
                     
                     Debug.Log($"Loaded {folderPaths.Count} folder paths from PlayCanvas");
@@ -2430,32 +2421,16 @@ namespace Assets.Editor.PlayCanvas {
                     Debug.LogWarning($"Container {containerId} not found in API response");
                     continue;
                 }
-
-                if (possibleFBX != null) {
-                    containerToFBXMap[containerId] = possibleFBX.id;
-                    Debug.Log($"Found matching FBX {possibleFBX.id} for container {containerId}");
-                    
-                    // ДОБАВЛЯЕМ: Проверяем и загружаем найденный FBX
-                    AssetStatus fbxStatus = CheckAssetStatus(possibleFBX.id, possibleFBX);
-                    if (fbxStatus != AssetStatus.UpToDate) {
-                        DownloadTask task = new() {
-                            assetId = possibleFBX.id,
-                            asset = possibleFBX,
-                            downloadUrl = possibleFBX.url,
-                            targetPath = GetAssetPath(possibleFBX),
-                            priority = CalculatePriority(possibleFBX, 10) * 2.0f
-                        };
-                        downloadTasks.Add(task);
-                        Debug.Log($"Added FBX {possibleFBX.id} from container search to download queue");
-                    }
-                }
-
+                
+                // Объявляем переменную ДО условных блоков
+                PCAsset possibleFBX = null;
+                
                 // Находим sourceId для контейнера
                 if (containerAsset.sourceId == 0) {
                     Debug.LogWarning($"Container {containerId} has no sourceId, checking for direct FBX");
                     
                     // Попробуем найти FBX с тем же именем
-                    var possibleFBX = allAssets.Values.FirstOrDefault(a => 
+                    possibleFBX = allAssets.Values.FirstOrDefault(a => 
                         a.type == "model" && 
                         a.name == containerAsset.name &&
                         a.folder == containerAsset.folder);
@@ -2469,6 +2444,23 @@ namespace Assets.Editor.PlayCanvas {
                     }
                 } else {
                     containerToFBXMap[containerId] = containerAsset.sourceId;
+                }
+                
+                // Теперь possibleFBX доступна здесь
+                if (possibleFBX != null) {
+                    // Проверяем и загружаем найденный FBX
+                    AssetStatus fbxStatus = CheckAssetStatus(possibleFBX.id, possibleFBX);
+                    if (fbxStatus != AssetStatus.UpToDate) {
+                        DownloadTask task = new() {
+                            assetId = possibleFBX.id,
+                            asset = possibleFBX,
+                            downloadUrl = possibleFBX.url,
+                            targetPath = GetAssetPath(possibleFBX),
+                            priority = CalculatePriority(possibleFBX, 10) * 2.0f
+                        };
+                        downloadTasks.Add(task);
+                        Debug.Log($"Added FBX {possibleFBX.id} from container search to download queue");
+                    }
                 }
             }
             
