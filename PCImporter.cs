@@ -53,7 +53,7 @@ namespace Assets.Editor.PlayCanvas {
         [NonSerialized]
         private SceneStatistics stats;
 
-        private bool statsInitialized = false;
+        //private bool statsInitialized = false;
         private bool statsCollected = false; 
 
         // Поля для атласа
@@ -1227,12 +1227,32 @@ namespace Assets.Editor.PlayCanvas {
                 return;
             }
             
-            // Регистрируем ассеты
-            if (modelId != 0) {
-                RegisterAsset(collectedModels, modelId, "model", entity.id, path);
+            // Регистрируем render asset только если есть ID
+            if (renderAssetId != 0) {
+                RegisterAsset(collectedRenderAssets, renderAssetId, "render", entity.id, path);
                 
-                if (materialIds.Count > 0) {
-                    modelToMaterialsMap[modelId] = materialIds;
+                // Сохраняем информацию о контейнере
+                if (containerAssetId.HasValue && renderIndex.HasValue) {
+                    renderToContainerMap[renderAssetId] = containerAssetId.Value;
+                    
+                    AssetUsageInfo renderInfo = collectedRenderAssets[renderAssetId];
+                    renderInfo.containerAssetId = containerAssetId;
+                    renderInfo.renderIndex = renderIndex;
+                    
+                    if (showDebugLogs) {
+                        Debug.Log($"Render asset {renderAssetId} is from container {containerAssetId} at index {renderIndex}");
+                    }
+                }
+            }
+
+            // Регистрируем материалы
+            foreach (int matId in materialIds) {
+                RegisterAsset(collectedMaterials, matId, "material", entity.id, path);
+                
+                // Сохраняем путь для материала на основе рендера
+                if (renderAssetId != 0 && allAssets != null && allAssets.TryGetValue(renderAssetId, out PCAsset renderAsset)) {
+                    string folderPath = GetPlayCanvasFolderPath(renderAsset.folder);
+                    materialPathCache[matId] = folderPath;
                 }
             }
             
@@ -1257,7 +1277,7 @@ namespace Assets.Editor.PlayCanvas {
                         modelId = assetToken.Value<int>();
                     }
                     
-                    // Получаем материалы из materialAssets (новое место)
+                    // Получаем материалы из materialAssets
                     if (jObj["materialAssets"] is JArray matArray) {
                         foreach (JToken mat in matArray) {
                             if (mat != null && mat.Type != JTokenType.Null) {
@@ -1291,47 +1311,33 @@ namespace Assets.Editor.PlayCanvas {
                                 textureIds.Add(emissiveMap.Value);
                         }
                     }
-                }
-                else if (renderObj is RenderComponent renderComp) {
+                }else if (modelObj is ModelComponent modelComp) {
                     // Обработка типизированного компонента
-                    if (renderComp.type == "asset" && renderComp.asset != null) {
-                        if (renderComp.asset is int id) {
-                            renderAssetId = id;
-                        } else if (int.TryParse(renderComp.asset.ToString(), out int parsedId)) {
-                            renderAssetId = parsedId;
-                        }
-                    }
-                    
-                    // Обработка материалов
-                    if (renderComp.materialAssets != null) {
-                        foreach (JToken mat in renderComp.materialAssets) {
-                            if (mat != null && mat.Type != JTokenType.Null) {
-                                int matId = mat.Value<int>();
-                                if (matId != 0) materialIds.Add(matId);
-                            }
+                    if (!string.IsNullOrEmpty(modelComp.asset)) {
+                        if (int.TryParse(modelComp.asset, out int parsedId)) {
+                            modelId = parsedId;
                         }
                     }
                 }
             }
             catch (Exception ex) {
-                Debug.LogError($"Error processing render component at {path}: {ex.Message}");
+                Debug.LogError($"Error processing model component at {path}: {ex.Message}");
                 return;
             }
             
-            // Регистрируем render asset только если есть ID
-            if (renderAssetId != 0) {
-                RegisterAsset(collectedRenderAssets, renderAssetId, "render", entity.id, path);
+            // Регистрируем модель
+            if (modelId != 0) {
+                RegisterAsset(collectedModels, modelId, "model", entity.id, path);
                 
-                // НОВОЕ: Сохраняем информацию о контейнере
-                if (containerAssetId.HasValue && renderIndex.HasValue) {
-                    renderToContainerMap[renderAssetId] = containerAssetId.Value;
-                    
-                    AssetUsageInfo renderInfo = collectedRenderAssets[renderAssetId];
-                    renderInfo.containerAssetId = containerAssetId;
-                    renderInfo.renderIndex = renderIndex;
-                    
-                    if (showDebugLogs) {
-                        Debug.Log($"Render asset {renderAssetId} is from container {containerAssetId} at index {renderIndex}");
+                if (materialIds.Count > 0) {
+                    modelToMaterialsMap[modelId] = materialIds;
+                }
+                
+                // Сохраняем путь для материалов на основе модели
+                if (allAssets != null && allAssets.TryGetValue(modelId, out PCAsset modelAsset)) {
+                    string folderPath = GetPlayCanvasFolderPath(modelAsset.folder);
+                    foreach (int matId in materialIds) {
+                        materialPathCache[matId] = folderPath;
                     }
                 }
             }
@@ -1339,14 +1345,8 @@ namespace Assets.Editor.PlayCanvas {
             // Регистрируем материалы
             foreach (int matId in materialIds) {
                 RegisterAsset(collectedMaterials, matId, "material", entity.id, path);
-                
-                // НОВОЕ: Сохраняем путь для материала на основе рендера/модели
-                if (renderAssetId != 0 && allAssets != null && allAssets.TryGetValue(renderAssetId, out PCAsset renderAsset)) {
-                    string folderPath = GetPlayCanvasFolderPath(renderAsset.folder);
-                    materialPathCache[matId] = folderPath;
-                }
             }
-
+            
             // Регистрируем текстуры
             foreach (int texId in textureIds) {
                 RegisterAsset(collectedTextures, texId, "texture", entity.id, path);
@@ -1435,7 +1435,15 @@ namespace Assets.Editor.PlayCanvas {
                 int modelId = modelEntry.Key;
                 
                 if (!assetCache.entries.TryGetValue(modelId, out AssetCacheEntry cached)) {
-                    Debug.LogWarning($"Model {modelId} not in cache");
+                    Debug.LogWarning($"Model {modelId} not in cache - may have failed to download");
+                    
+                    // ИСПРАВЛЕНИЕ: Создаем заглушку для отсутствующих моделей
+                    processedAssets[modelId] = new ProcessedAsset {
+                        prefab = null,
+                        mesh = GetPrimitiveMesh(PrimitiveType.Cube), // Используем куб как заглушку
+                        materials = new Material[] { new Material(Shader.Find("Universal Render Pipeline/Lit")) },
+                        submeshNames = new string[] { "Missing_Model" }
+                    };
                     continue;
                 }
                 
@@ -1864,6 +1872,9 @@ namespace Assets.Editor.PlayCanvas {
             try {
                 string renderType = "";
                 JArray materialsDataArray = null;
+
+                MeshFilter meshFilter = obj.GetComponent<MeshFilter>() ?? obj.AddComponent<MeshFilter>();
+                MeshRenderer meshRenderer = obj.GetComponent<MeshRenderer>() ?? obj.AddComponent<MeshRenderer>();
                 
                 if (renderData is JObject jObj) {
                     renderType = jObj["type"]?.Value<string>() ?? "";
@@ -1881,17 +1892,32 @@ namespace Assets.Editor.PlayCanvas {
                     return false;
                 }
                 
-                // Получаем обработанный ассет
                 if (!processedAssets.TryGetValue(assetId, out ProcessedAsset processed)) {
                     Debug.LogWarning($"No processed asset for ID {assetId} on {obj.name}");
+                    
+                    // ИСПРАВЛЕНИЕ: Правильное создание компонентов
+                    MeshFilter meshFilter = obj.GetComponent<MeshFilter>();
+                    if (meshFilter == null) {
+                        meshFilter = obj.AddComponent<MeshFilter>();
+                    }
+                    meshFilter.sharedMesh = GetPrimitiveMesh(PrimitiveType.Cube);
+                    
+                    MeshRenderer meshRenderer = obj.GetComponent<MeshRenderer>();
+                    if (meshRenderer == null) {
+                        meshRenderer = obj.AddComponent<MeshRenderer>();
+                    }
+                    meshRenderer.sharedMaterial = new Material(Shader.Find("Universal Render Pipeline/Lit")) {
+                        name = "Missing_Material"
+                    };
+                    
                     return false;
                 }
-                
+                                
                 // Применяем mesh и материалы
-                MeshFilter meshFilter = obj.GetComponent<MeshFilter>() ?? obj.AddComponent<MeshFilter>();
+                //MeshFilter meshFilter = obj.GetComponent<MeshFilter>() ?? obj.AddComponent<MeshFilter>();
                 meshFilter.sharedMesh = processed.mesh;
                 
-                MeshRenderer meshRenderer = obj.GetComponent<MeshRenderer>() ?? obj.AddComponent<MeshRenderer>();
+                //MeshRenderer meshRenderer = obj.GetComponent<MeshRenderer>() ?? obj.AddComponent<MeshRenderer>();
                 
                 // Создаем материалы на основе materialsData если есть
                 if (materialsDataArray != null && materialsDataArray.Count > 0) {
@@ -2321,6 +2347,12 @@ namespace Assets.Editor.PlayCanvas {
                 return url;
             }
             
+            // ИСПРАВЛЕНИЕ: Проверяем, что sourceId валиден
+            if (sourceId == 0) {
+                Debug.LogWarning($"Cannot transform URL without valid sourceId: {url}");
+                return url; // Возвращаем оригинальный URL
+            }
+            
             // Преобразуем URL для загрузки FBX вместо GLB
             string transformed = Regex.Replace(url,
                 @"^(\/api\/assets\/)\d+(\/file\/.+?)\.glb(.*)$",
@@ -2398,30 +2430,45 @@ namespace Assets.Editor.PlayCanvas {
                     Debug.LogWarning($"Container {containerId} not found in API response");
                     continue;
                 }
-                
-                // Находим sourceId для контейнера
-                if (containerAsset.sourceId != 0) {
-                    containerToFBXMap[containerId] = containerAsset.sourceId;
+
+                if (possibleFBX != null) {
+                    containerToFBXMap[containerId] = possibleFBX.id;
+                    Debug.Log($"Found matching FBX {possibleFBX.id} for container {containerId}");
                     
-                    // Проверяем, нужно ли загружать FBX
-                    if (!allAssets.TryGetValue(containerAsset.sourceId, out PCAsset fbxAsset)) {
-                        Debug.LogWarning($"FBX {containerAsset.sourceId} for container {containerId} not found");
-                        continue;
-                    }
-                    
-                    AssetStatus status = CheckAssetStatus(fbxAsset.id, fbxAsset);
-                    
-                    if (status != AssetStatus.UpToDate) {
+                    // ДОБАВЛЯЕМ: Проверяем и загружаем найденный FBX
+                    AssetStatus fbxStatus = CheckAssetStatus(possibleFBX.id, possibleFBX);
+                    if (fbxStatus != AssetStatus.UpToDate) {
                         DownloadTask task = new() {
-                            assetId = fbxAsset.id,
-                            asset = fbxAsset,
-                            downloadUrl = fbxAsset.url,
-                            targetPath = GetAssetPath(fbxAsset),
-                            priority = CalculatePriority(fbxAsset, 10) * 2.0f // Высокий приоритет для контейнеров
+                            assetId = possibleFBX.id,
+                            asset = possibleFBX,
+                            downloadUrl = possibleFBX.url,
+                            targetPath = GetAssetPath(possibleFBX),
+                            priority = CalculatePriority(possibleFBX, 10) * 2.0f
                         };
                         downloadTasks.Add(task);
-                        Debug.Log($"Added FBX {fbxAsset.id} for container {containerId} to download queue");
+                        Debug.Log($"Added FBX {possibleFBX.id} from container search to download queue");
                     }
+                }
+
+                // Находим sourceId для контейнера
+                if (containerAsset.sourceId == 0) {
+                    Debug.LogWarning($"Container {containerId} has no sourceId, checking for direct FBX");
+                    
+                    // Попробуем найти FBX с тем же именем
+                    var possibleFBX = allAssets.Values.FirstOrDefault(a => 
+                        a.type == "model" && 
+                        a.name == containerAsset.name &&
+                        a.folder == containerAsset.folder);
+                        
+                    if (possibleFBX != null) {
+                        containerToFBXMap[containerId] = possibleFBX.id;
+                        Debug.Log($"Found matching FBX {possibleFBX.id} for container {containerId}");
+                    } else {
+                        Debug.LogError($"No FBX found for container {containerId} '{containerAsset.name}'");
+                        continue;
+                    }
+                } else {
+                    containerToFBXMap[containerId] = containerAsset.sourceId;
                 }
             }
             
@@ -2564,6 +2611,50 @@ namespace Assets.Editor.PlayCanvas {
                 HttpResponseMessage response = await client.GetAsync(fullUrl);
                 response.EnsureSuccessStatusCode();
                 
+
+                
+                if (!response.IsSuccessStatusCode) {
+                    if (response.StatusCode == System.Net.HttpStatusCode.Forbidden) {
+                        Debug.LogError($"Access denied (403) for {task.asset.name}. Check authorization token and project permissions.");
+                        
+                        // Для GLB файлов пробуем альтернативный URL
+                        if (fullUrl.Contains(".glb") && task.asset.sourceId != 0) {
+                            Debug.Log($"Trying alternative FBX URL for {task.asset.name}");
+                            string altUrl = TransformGLBtoFBXAssetUrl(fullUrl, task.asset.sourceId);
+                            if (altUrl != fullUrl) {
+                                response = await client.GetAsync(altUrl);
+                            }
+                        }
+                    }
+
+                    if (response.StatusCode == System.Net.HttpStatusCode.Forbidden) {
+                        Debug.LogError($"Access denied (403) for {task.asset.name}. Check authorization token and project permissions.");
+                        
+                        // Для container assets пробуем найти прямой FBX
+                        if (task.asset.type == "container" && allAssets != null) {
+                            var directFBX = allAssets.Values.FirstOrDefault(a => 
+                                a.type == "model" && 
+                                a.name == task.asset.name &&
+                                a.url.EndsWith(".fbx"));
+                                
+                            if (directFBX != null) {
+                                Debug.Log($"Trying direct FBX URL for container {task.asset.name}");
+                                string fbxUrl = directFBX.url;
+                                if (fbxUrl.StartsWith("/")) {
+                                    fbxUrl = $"https://playcanvas.com{fbxUrl}?branchId={branchId}";
+                                }
+                                response = await client.GetAsync(fbxUrl);
+                            }
+                        }
+                    }
+                    
+                    if (!response.IsSuccessStatusCode) {
+                        Debug.LogError($"Failed to download {task.asset.name}: {response.StatusCode} ({response.ReasonPhrase})");
+                        return;
+                    }
+                }
+
+
                 byte[] content = await response.Content.ReadAsByteArrayAsync();
                 await File.WriteAllBytesAsync(task.targetPath, content);
                 
