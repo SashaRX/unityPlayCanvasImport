@@ -1412,13 +1412,17 @@ namespace Assets.Editor.PlayCanvas {
                 int renderAssetId = renderEntry.Key;
                 AssetUsageInfo renderInfo = renderEntry.Value;
                 int containerId = renderInfo.containerAssetId.Value;
-                
+                // Находим правильный индекс для этого render asset
+var renderMatch = containerData.renders.FirstOrDefault(r => r.id == renderAssetId);
+int meshIndex = renderMatch?.index ?? renderInfo.renderIndex ?? 0;  // ← Добавить эту строку
+
+Debug.Log($"Processing render asset {renderAssetId} '{renderMatch?.name}' from container {containerId} at index {meshIndex}");
                 // Используем данные из словаря
                 if (sceneData.containers != null && sceneData.containers.TryGetValue(containerId, out ContainerData containerData)) {
                     // Находим правильный индекс для этого render asset
                     var renderMatch = containerData.renders.FirstOrDefault(r => r.id == renderAssetId);
-                    int meshIndex = renderMatch?.index ?? renderInfo.renderIndex ?? 0;
-                    
+                    int meshIndex = renderMatch?.index ?? renderInfo.renderIndex ?? 0;  // ← Добавить эту строку
+
                     Debug.Log($"Processing render asset {renderAssetId} '{renderMatch?.name}' from container {containerId} at index {meshIndex}");
                 }
 
@@ -1441,6 +1445,7 @@ namespace Assets.Editor.PlayCanvas {
                 
                 // Извлекаем меш из FBX
                 ProcessedAsset extracted = ExtractMeshFromFBXContainer(fbxId, fbxCached.localPath, meshIndex, renderAssetId);
+                
                 if (extracted != null) {
                     processedAssets[renderAssetId] = extracted;
                     Debug.Log($"Successfully extracted mesh for render asset {renderAssetId}");
@@ -1592,27 +1597,20 @@ namespace Assets.Editor.PlayCanvas {
                     continue;
                 }
                 
-                // Ищем данные материала
-                JToken matData = null;
-                if (materialsData != null) {
-                    foreach (JToken data in materialsData) {
-                        if (data["id"]?.Value<int>() == matId) {
-                            matData = data;
-                            break;
-                        }
-                    }
-                }
+                // Получаем путь папки для материала
+                string matFolderPath = materialPathCache.ContainsKey(matId) 
+                    ? materialPathCache[matId] 
+                    : GetMaterialFolderPath(matId);
                 
-                // Создаем материал
-                if (matData != null) {
-                    if (sceneData.materials.TryGetValue(matId, out MaterialData materialData)) {
-                        materials[i] = CreateMaterialFromPlayCanvas(materialData, matFolderPath);
-                    }
+                // Используем глобальный словарь материалов
+                if (sceneData.materials != null && sceneData.materials.TryGetValue(matId, out MaterialData materialData)) {
+                    materials[i] = CreateMaterialFromPlayCanvas(materialData, matFolderPath);
                 } else {
                     // Fallback - создаем дефолтный материал
                     materials[i] = new Material(Shader.Find("Universal Render Pipeline/Lit")) {
                         name = $"PC_Material_{matId}"
                     };
+                    Debug.LogWarning($"Material {matId} not found in global dictionary, using default");
                 }
             }
             
