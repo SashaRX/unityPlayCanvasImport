@@ -1412,45 +1412,43 @@ namespace Assets.Editor.PlayCanvas {
                 int renderAssetId = renderEntry.Key;
                 AssetUsageInfo renderInfo = renderEntry.Value;
                 int containerId = renderInfo.containerAssetId.Value;
-                // Находим правильный индекс для этого render asset
-var renderMatch = containerData.renders.FirstOrDefault(r => r.id == renderAssetId);
-int meshIndex = renderMatch?.index ?? renderInfo.renderIndex ?? 0;  // ← Добавить эту строку
-
-Debug.Log($"Processing render asset {renderAssetId} '{renderMatch?.name}' from container {containerId} at index {meshIndex}");
+                
                 // Используем данные из словаря
                 if (sceneData.containers != null && sceneData.containers.TryGetValue(containerId, out ContainerData containerData)) {
                     // Находим правильный индекс для этого render asset
                     var renderMatch = containerData.renders.FirstOrDefault(r => r.id == renderAssetId);
-                    int meshIndex = renderMatch?.index ?? renderInfo.renderIndex ?? 0;  // ← Добавить эту строку
-
+                    int meshIndex = renderMatch?.index ?? renderInfo.renderIndex ?? 0;
+                    
                     Debug.Log($"Processing render asset {renderAssetId} '{renderMatch?.name}' from container {containerId} at index {meshIndex}");
-                }
-
-                // Находим FBX для контейнера
-                if (!containerToFBXMap.TryGetValue(containerId, out int fbxId)) {
-                    Debug.LogError($"No FBX mapping found for container {containerId}");
-                    continue;
-                }
-                
-                // Проверяем, загружен ли FBX
-                if (!assetCache.entries.TryGetValue(fbxId, out AssetCacheEntry fbxCached)) {
-                    Debug.LogError($"FBX {fbxId} not in cache for container {containerId}");
-                    continue;
-                }
-                
-                if (!File.Exists(fbxCached.localPath)) {
-                    Debug.LogError($"FBX file not found: {fbxCached.localPath}");
-                    continue;
-                }
-                
-                // Извлекаем меш из FBX
-                ProcessedAsset extracted = ExtractMeshFromFBXContainer(fbxId, fbxCached.localPath, meshIndex, renderAssetId);
-                
-                if (extracted != null) {
-                    processedAssets[renderAssetId] = extracted;
-                    Debug.Log($"Successfully extracted mesh for render asset {renderAssetId}");
+                    
+                    // Находим FBX для контейнера
+                    if (!containerToFBXMap.TryGetValue(containerId, out int fbxId)) {
+                        Debug.LogError($"No FBX mapping found for container {containerId}");
+                        continue;
+                    }
+                    
+                    // Проверяем, загружен ли FBX
+                    if (!assetCache.entries.TryGetValue(fbxId, out AssetCacheEntry fbxCached)) {
+                        Debug.LogError($"FBX {fbxId} not in cache for container {containerId}");
+                        continue;
+                    }
+                    
+                    if (!File.Exists(fbxCached.localPath)) {
+                        Debug.LogError($"FBX file not found: {fbxCached.localPath}");
+                        continue;
+                    }
+                    
+                    // Извлекаем меш из FBX
+                    ProcessedAsset extracted = ExtractMeshFromFBXContainer(fbxId, fbxCached.localPath, meshIndex, renderAssetId);
+                    
+                    if (extracted != null) {
+                        processedAssets[renderAssetId] = extracted;
+                        Debug.Log($"Successfully extracted mesh for render asset {renderAssetId}");
+                    } else {
+                        Debug.LogError($"Failed to extract mesh for render asset {renderAssetId}");
+                    }
                 } else {
-                    Debug.LogError($"Failed to extract mesh for render asset {renderAssetId}");
+                    Debug.LogError($"Container {containerId} not found in scene data dictionary");
                 }
             }
             
