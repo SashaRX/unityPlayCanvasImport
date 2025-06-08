@@ -11,6 +11,8 @@ using System.IO;
 using System.Net.Http;
 using System.Linq;
 using System.Threading;
+using System.Reflection;
+
 
 // Newtonsoft
 using Newtonsoft.Json;
@@ -550,6 +552,7 @@ namespace Assets.Editor.PlayCanvas {
                     NullValueHandling = NullValueHandling.Ignore,
                     MissingMemberHandling = MissingMemberHandling.Ignore,
                     Converters = new List<JsonConverter> {
+                        new UniversalIdConverter(), // Добавляем универсальный конвертер
                         new ComponentConverter()
                     }
                 };
@@ -568,6 +571,12 @@ namespace Assets.Editor.PlayCanvas {
                         Debug.Log($"Textures: {sceneData.textures?.Count ?? 0}");
                         Debug.Log($"Containers: {sceneData.containers?.Count ?? 0}");
                         Debug.Log($"Models: {sceneData.models?.Count ?? 0}");
+                        
+                        // Проверяем преобразование ID
+                        if (sceneData.containers != null && sceneData.containers.Count > 0) {
+                            var firstContainer = sceneData.containers.First().Value;
+                            Debug.Log($"First container sourceAssetId type: {firstContainer.sourceId?.GetType()?.Name ?? "null"}");
+                        }
                     }
                 }
 
@@ -2266,9 +2275,7 @@ namespace Assets.Editor.PlayCanvas {
 
         private void BuildFolderPaths(FolderNode folder, string parentPath, Dictionary<int, string> result) {
             // Строим полный путь для текущей папки
-            string currentPath = string.IsNullOrEmpty(parentPath) 
-                ? folder.name 
-                : $"{parentPath}/{folder.name}";
+            string currentPath = string.IsNullOrEmpty(parentPath) ? folder.name : $"{parentPath}/{folder.name}";
             
             folder.fullPath = currentPath;
             result[folder.id] = currentPath;
@@ -2374,7 +2381,7 @@ namespace Assets.Editor.PlayCanvas {
                     
                     Debug.Log($"Processing container {containerId} '{containerData.name}' with {containerData.renders.Count} renders");
                     
-                    // Мапим контейнер на FBX
+                    // Теперь sourceId уже int благодаря конвертеру
                     if (containerData.sourceId.HasValue && containerData.sourceId.Value != 0) {
                         containerToFBXMap[containerId] = containerData.sourceId.Value;
                         
@@ -2944,6 +2951,88 @@ namespace Assets.Editor.PlayCanvas {
         }
     }
 
+    public class UniversalIdConverter : JsonConverter {
+        // Список полей, которые должны быть преобразованы в int
+        private static readonly HashSet<string> IdFieldNames = new() {
+            "id", "asset", "assetId", "sourceAssetId", "sourceId", 
+            "containerAsset", "containerAssetId", "templateAssetId",
+            "materialAsset", "textureId", "modelId", "renderId",
+            "parent", "folder", "source_asset_id"
+        };
+
+        public override bool CanConvert(Type objectType) {
+            return true; // Обрабатываем все типы
+        }
+
+        public override object ReadJson(JsonReader reader, Type objectType, object existingValue, JsonSerializer serializer) {
+            if (reader.TokenType == JsonToken.Null)
+                return null;
+
+            // Для простых типов
+            if (objectType.IsPrimitive || objectType == typeof(string)) {
+                return reader.Value;
+            }
+
+            // Для объектов
+            JObject jObject = JObject.Load(reader);
+            
+            // Обрабатываем ID поля
+            foreach (var property in jObject.Properties().ToList()) {
+                if (IsIdField(property.Name) && property.Value.Type == JTokenType.String) {
+                    string strValue = property.Value.Value<string>();
+                    if (!string.IsNullOrEmpty(strValue) && int.TryParse(strValue, out int intValue)) {
+                        property.Value = intValue;
+                    }
+                }
+            }
+
+            // Удаляем null поля
+            RemoveNullProperties(jObject);
+
+            // Десериализуем обработанный объект
+            using (var subReader = jObject.CreateReader()) {
+                var result = Activator.CreateInstance(objectType);
+                serializer.Populate(subReader, result);
+                return result;
+            }
+        }
+
+        private bool IsIdField(string fieldName) {
+            // Проверяем точное совпадение или окончание на Id/ID
+            return IdFieldNames.Contains(fieldName) || 
+                fieldName.EndsWith("Id", StringComparison.OrdinalIgnoreCase) ||
+                fieldName.EndsWith("ID", StringComparison.Ordinal);
+        }
+
+        private void RemoveNullProperties(JToken token) {
+            if (token.Type == JTokenType.Object) {
+                var obj = (JObject)token;
+                var propsToRemove = obj.Properties()
+                    .Where(p => p.Value.Type == JTokenType.Null)
+                    .ToList();
+                
+                foreach (var prop in propsToRemove) {
+                    prop.Remove();
+                }
+
+                // Рекурсивно для вложенных объектов
+                foreach (var prop in obj.Properties()) {
+                    RemoveNullProperties(prop.Value);
+                }
+            }
+            else if (token.Type == JTokenType.Array) {
+                foreach (var item in token.Children()) {
+                    RemoveNullProperties(item);
+                }
+            }
+        }
+
+        public override void WriteJson(JsonWriter writer, object value, JsonSerializer serializer) {
+            throw new NotImplementedException();
+        }
+    }
+
+
     #endregion
 
     #region SceneData
@@ -3141,60 +3230,57 @@ namespace Assets.Editor.PlayCanvas {
 
     #endregion SceneData
 }
+internal sealed class PlayCanvasFbxImportPostprocessor : AssetPostprocessor{
+    private const string kRootFolder = "/PlayCanvasData/"; // ограничиваемся «нашими» файлами
 
-namespace Assets.Editor.PlayCanvas{
-    internal sealed class PlayCanvasFbxImportPostprocessor : AssetPostprocessor{
-        private const string kRootFolder = "/PlayCanvasData/"; // ограничиваемся «нашими» файлами
+    void OnPreprocessModel(){
+        // обрабатываем только модели в PlayCanvasData
+        if (!assetPath.Contains(kRootFolder, System.StringComparison.OrdinalIgnoreCase))
+            return;
 
-        void OnPreprocessModel(){
-            // обрабатываем только модели в PlayCanvasData
-            if (!assetPath.Contains(kRootFolder, System.StringComparison.OrdinalIgnoreCase))
-                return;
+        var imp = (ModelImporter)assetImporter;
 
-            var imp = (ModelImporter)assetImporter;
+        // ───────────── Scene ─────────────
+        //imp.globalScale               = 1f;       // Scale Factor = 1
+        //imp.useFileScale              = true;     // Convert Units ✓
+        imp.bakeAxisConversion        = false;
+        imp.preserveHierarchy         = false;
+        imp.importCameras             = false;
+        imp.importLights              = false;
+        imp.importVisibility          = false;
+        imp.importBlendShapes         = false;
+        imp.sortHierarchyByName       = false;
 
-            // ───────────── Scene ─────────────
-            //imp.globalScale               = 1f;       // Scale Factor = 1
-            //imp.useFileScale              = true;     // Convert Units ✓
-            imp.bakeAxisConversion        = false;
-            imp.preserveHierarchy         = false;
-            imp.importCameras             = false;
-            imp.importLights              = false;
-            imp.importVisibility          = false;
-            imp.importBlendShapes         = false;
-            imp.sortHierarchyByName       = false;
-
-            // ───────────── Meshes ────────────
-            imp.meshCompression           = ModelImporterMeshCompression.Off;
-            imp.isReadable                = true;     // Read/Write ✓
+        // ───────────── Meshes ────────────
+        imp.meshCompression           = ModelImporterMeshCompression.Off;
+        imp.isReadable                = true;     // Read/Write ✓
 
 #if UNITY_2021_2_OR_NEWER
-            imp.optimizeMeshPolygons      = false;    // «Nothing»
-            imp.optimizeMeshVertices      = false;
+        imp.optimizeMeshPolygons      = false;    // «Nothing»
+        imp.optimizeMeshVertices      = false;
 #else
-            imp.optimizeMesh              = false;    // устаревшее, но для старых версий
+        imp.optimizeMesh              = false;    // устаревшее, но для старых версий
 #endif
-            imp.addCollider               = false;
+        imp.addCollider               = false;
 
-            // ───────────── Geometry ──────────
-            imp.keepQuads                 = false;
-            imp.weldVertices              = false;
-            imp.indexFormat               = ModelImporterIndexFormat.Auto;
-            imp.swapUVChannels            = false;
-            imp.generateSecondaryUV       = false;    // Generate Lightmap UVs ✗
-            imp.strictVertexDataChecks    = false;
+        // ───────────── Geometry ──────────
+        imp.keepQuads                 = false;
+        imp.weldVertices              = false;
+        imp.indexFormat               = ModelImporterIndexFormat.Auto;
+        imp.swapUVChannels            = false;
+        imp.generateSecondaryUV       = false;    // Generate Lightmap UVs ✗
+        imp.strictVertexDataChecks    = false;
 
-            // нормали / тангенсы оставляем по умолчанию (как на скрине)
-            imp.importNormals             = ModelImporterNormals.Import;
-            imp.importTangents            = ModelImporterTangents.CalculateMikk;
-            imp.normalSmoothingSource     = ModelImporterNormalSmoothingSource.FromSmoothingGroups;
+        // нормали / тангенсы оставляем по умолчанию (как на скрине)
+        imp.importNormals             = ModelImporterNormals.Import;
+        imp.importTangents            = ModelImporterTangents.CalculateMikk;
+        imp.normalSmoothingSource     = ModelImporterNormalSmoothingSource.FromSmoothingGroups;
 
-            // ───────────── Анимация / Материалы ────────────
-            imp.animationType             = ModelImporterAnimationType.None;
-            imp.importConstraints         = false;
-            imp.importAnimation           = false;
-            imp.materialImportMode        = ModelImporterMaterialImportMode.None;
-        }
+        // ───────────── Анимация / Материалы ────────────
+        imp.animationType             = ModelImporterAnimationType.None;
+        imp.importConstraints         = false;
+        imp.importAnimation           = false;
+        imp.materialImportMode        = ModelImporterMaterialImportMode.None;
     }
 }
 
