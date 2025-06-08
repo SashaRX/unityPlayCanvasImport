@@ -68,8 +68,16 @@ namespace Assets.Editor.PlayCanvas {
         [NonSerialized]
         private Texture2D hdrAtlasTexture = null; // Текстура атласа
 
-        private static Mesh quadMesh = null; // Кэшированный меш для квадрата
-        private static Mesh diskMesh = null; // Кэшированный меш для диска
+        private static Mesh quadMesh       = null; // Кэшированный меш для квадрата
+        private static Mesh diskMesh       = null; // Кэшированный меш для диска
+
+        private static bool _albedoOnly = false;           // true → игнорируем AO/Normal/прочее
+        private static readonly HashSet<string> kKeepSlots = new()
+        {
+            "diffuseMap",
+            "emissiveMap",
+            "opacityMap"
+        };
 
         [NonSerialized]
         private readonly Dictionary<string, GameObject> idToGameObject = new();
@@ -221,12 +229,12 @@ namespace Assets.Editor.PlayCanvas {
             EditorApplication.delayCall -= DelayedInitialization;
             
             //statsInitialized = false;
-            nickname = EditorPrefs.GetString("PlayCanvas_Nickname", "");
-            tokenId = EditorPrefs.GetString("PlayCanvas_TokenID", "");
-            projectId = EditorPrefs.GetString("PlayCanvas_ProjectID", "");
-            branchId = EditorPrefs.GetString("PlayCanvas_BranchID", "");
+            nickname       = EditorPrefs.GetString("PlayCanvas_Nickname", "");
+            tokenId        = EditorPrefs.GetString("PlayCanvas_TokenID", "");
+            projectId      = EditorPrefs.GetString("PlayCanvas_ProjectID", "");
+            branchId       = EditorPrefs.GetString("PlayCanvas_BranchID", "");
             entityJsonPath = EditorPrefs.GetString("JSON_Path", "");
-            showDebugLogs = EditorPrefs.GetBool("DebugLog", false);
+            showDebugLogs  = EditorPrefs.GetBool("DebugLog", false);
             showSceneStats = EditorPrefs.GetBool("ShowSceneStats", true);
 
             statsCollected = false;
@@ -282,6 +290,8 @@ namespace Assets.Editor.PlayCanvas {
             } else {
                 EditorGUILayout.HelpBox("Folder mapping is null!", MessageType.Error);
             }
+
+            _albedoOnly = EditorGUILayout.Toggle("Only Albedo", _albedoOnly);
 
             if (GUILayout.Button("Full Import Pipeline", GUILayout.Height(30))) {
                 EditorApplication.delayCall += async () => {
@@ -1225,7 +1235,10 @@ namespace Assets.Editor.PlayCanvas {
                 if (sceneData.materials != null && sceneData.materials.TryGetValue(matId, out MaterialData matData)) {
                     if (matData.textures != null) {
                         foreach (var texturePair in matData.textures) {
-                            RegisterAsset(collectedTextures, texturePair.Value, "texture", entity.id, path);
+                            string slotName = texturePair.Key;
+                            if (!_albedoOnly || kKeepSlots.Contains(slotName)) {
+                                RegisterAsset(collectedTextures, texturePair.Value, "texture", entity.id, path);
+                            }
                         }
                     }
                 }
@@ -1277,7 +1290,10 @@ namespace Assets.Editor.PlayCanvas {
                 if (sceneData.materials != null && sceneData.materials.TryGetValue(matId, out MaterialData matData)) {
                     if (matData.textures != null) {
                         foreach (var texturePair in matData.textures) {
-                            RegisterAsset(collectedTextures, texturePair.Value, "texture", entity.id, path);
+                            string slotName = texturePair.Key;
+                            if (!_albedoOnly || kKeepSlots.Contains(slotName)) {
+                                RegisterAsset(collectedTextures, texturePair.Value, "texture", entity.id, path);
+                            }
                             if (showDebugLogs) {
                                 Debug.Log($"Found {texturePair.Key}: {texturePair.Value} in material {matData.name}");
                             }
@@ -2681,7 +2697,8 @@ namespace Assets.Editor.PlayCanvas {
                             // Расширяем список поддерживаемых типов
                             if (assetType != "model" && assetType != "material" && 
                                 assetType != "texture" && assetType != "render" && 
-                                assetType != "template" && assetType != "container") {
+                                assetType != "template" && assetType != "container" && 
+                                assetType != "scene") {
                                 continue;
                             }
                             
@@ -3123,6 +3140,62 @@ namespace Assets.Editor.PlayCanvas {
 
 
     #endregion SceneData
+}
+
+namespace Assets.Editor.PlayCanvas{
+    internal sealed class PlayCanvasFbxImportPostprocessor : AssetPostprocessor{
+        private const string kRootFolder = "/PlayCanvasData/"; // ограничиваемся «нашими» файлами
+
+        void OnPreprocessModel(){
+            // обрабатываем только модели в PlayCanvasData
+            if (!assetPath.Contains(kRootFolder, System.StringComparison.OrdinalIgnoreCase))
+                return;
+
+            var imp = (ModelImporter)assetImporter;
+
+            // ───────────── Scene ─────────────
+            //imp.globalScale               = 1f;       // Scale Factor = 1
+            //imp.useFileScale              = true;     // Convert Units ✓
+            imp.bakeAxisConversion        = false;
+            imp.preserveHierarchy         = false;
+            imp.importCameras             = false;
+            imp.importLights              = false;
+            imp.importVisibility          = false;
+            imp.importBlendShapes         = false;
+            imp.sortHierarchyByName       = false;
+
+            // ───────────── Meshes ────────────
+            imp.meshCompression           = ModelImporterMeshCompression.Off;
+            imp.isReadable                = true;     // Read/Write ✓
+
+#if UNITY_2021_2_OR_NEWER
+            imp.optimizeMeshPolygons      = false;    // «Nothing»
+            imp.optimizeMeshVertices      = false;
+#else
+            imp.optimizeMesh              = false;    // устаревшее, но для старых версий
+#endif
+            imp.addCollider               = false;
+
+            // ───────────── Geometry ──────────
+            imp.keepQuads                 = false;
+            imp.weldVertices              = false;
+            imp.indexFormat               = ModelImporterIndexFormat.Auto;
+            imp.swapUVChannels            = false;
+            imp.generateSecondaryUV       = false;    // Generate Lightmap UVs ✗
+            imp.strictVertexDataChecks    = false;
+
+            // нормали / тангенсы оставляем по умолчанию (как на скрине)
+            imp.importNormals             = ModelImporterNormals.Import;
+            imp.importTangents            = ModelImporterTangents.CalculateMikk;
+            imp.normalSmoothingSource     = ModelImporterNormalSmoothingSource.FromSmoothingGroups;
+
+            // ───────────── Анимация / Материалы ────────────
+            imp.animationType             = ModelImporterAnimationType.None;
+            imp.importConstraints         = false;
+            imp.importAnimation           = false;
+            imp.materialImportMode        = ModelImporterMaterialImportMode.None;
+        }
+    }
 }
 
 #endif
