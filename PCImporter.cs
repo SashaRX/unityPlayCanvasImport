@@ -552,8 +552,7 @@ namespace Assets.Editor.PlayCanvas {
                     NullValueHandling = NullValueHandling.Ignore,
                     MissingMemberHandling = MissingMemberHandling.Ignore,
                     Converters = new List<JsonConverter> {
-                        new UniversalIdConverter(), // Добавляем универсальный конвертер
-                        new ComponentConverter()
+                        new ComponentConverter() // Только ComponentConverter
                     }
                 };
 
@@ -564,19 +563,12 @@ namespace Assets.Editor.PlayCanvas {
                     sceneData = null;
                 }
                 else {
-                    // Логирование загруженных данных
                     if (showDebugLogs) {
                         Debug.Log($"Scene data loaded successfully from {jsonFilePath}");
                         Debug.Log($"Materials: {sceneData.materials?.Count ?? 0}");
                         Debug.Log($"Textures: {sceneData.textures?.Count ?? 0}");
                         Debug.Log($"Containers: {sceneData.containers?.Count ?? 0}");
                         Debug.Log($"Models: {sceneData.models?.Count ?? 0}");
-                        
-                        // Проверяем преобразование ID
-                        if (sceneData.containers != null && sceneData.containers.Count > 0) {
-                            var firstContainer = sceneData.containers.First().Value;
-                            Debug.Log($"First container sourceAssetId type: {firstContainer.sourceId?.GetType()?.Name ?? "null"}");
-                        }
                     }
                 }
 
@@ -1497,31 +1489,52 @@ namespace Assets.Editor.PlayCanvas {
                     return null;
                 }
                 
-                if (meshIndex >= meshFilters.Length) {
-                    Debug.LogError($"Mesh index {meshIndex} out of bounds. FBX has {meshFilters.Length} meshes");
-                    return null;
+                Debug.Log($"FBX {fbxPath} contains {meshFilters.Length} meshes:");
+                for (int i = 0; i < meshFilters.Length; i++) {
+                    Debug.Log($"  [{i}] {meshFilters[i].gameObject.name}");
                 }
                 
-                // Берем меш по индексу
-                MeshFilter targetFilter = meshFilters[meshIndex];
-                Mesh mesh = targetFilter.sharedMesh;
-                
-                if (mesh == null) {
-                    Debug.LogError($"Mesh at index {meshIndex} is null");
-                    return null;
-                }
-                
-                // Проверяем имя
+                // Ищем меш по имени вместо индекса
                 string expectedName = null;
                 if (allAssets != null && allAssets.TryGetValue(renderAssetId, out PCAsset renderAsset)) {
                     expectedName = renderAsset.name;
                 }
                 
-                string actualName = targetFilter.gameObject.name;
+                MeshFilter targetFilter = null;
                 
-                if (!string.IsNullOrEmpty(expectedName) && expectedName != actualName) {
-                    Debug.LogWarning($"Mesh name mismatch for render asset {renderAssetId}: " +
-                                   $"expected '{expectedName}', got '{actualName}' at index {meshIndex}");
+                // Сначала пробуем найти по точному имени
+                if (!string.IsNullOrEmpty(expectedName)) {
+                    targetFilter = meshFilters.FirstOrDefault(mf => mf.gameObject.name == expectedName);
+                    
+                    if (targetFilter != null) {
+                        Debug.Log($"Found mesh by exact name match: {expectedName}");
+                    } else {
+                        // Пробуем частичное совпадение (для случаев типа Teapot001, Teapot002)
+                        targetFilter = meshFilters.FirstOrDefault(mf => 
+                            mf.gameObject.name.StartsWith(expectedName.Substring(0, Math.Min(expectedName.Length - 3, expectedName.Length))));
+                            
+                        if (targetFilter != null) {
+                            Debug.LogWarning($"Found mesh by partial name match: {targetFilter.gameObject.name} for {expectedName}");
+                        }
+                    }
+                }
+                
+                // Если не нашли по имени, используем индекс как fallback
+                if (targetFilter == null) {
+                    if (meshIndex < meshFilters.Length) {
+                        targetFilter = meshFilters[meshIndex];
+                        Debug.LogWarning($"Using mesh by index {meshIndex}: {targetFilter.gameObject.name}");
+                    } else {
+                        Debug.LogError($"Mesh index {meshIndex} out of bounds. FBX has {meshFilters.Length} meshes");
+                        return null;
+                    }
+                }
+                
+                Mesh mesh = targetFilter.sharedMesh;
+                
+                if (mesh == null) {
+                    Debug.LogError($"Mesh is null for {targetFilter.gameObject.name}");
+                    return null;
                 }
                 
                 // Получаем материалы
@@ -1538,7 +1551,7 @@ namespace Assets.Editor.PlayCanvas {
                     prefab = fbxPrefab,
                     mesh = mesh,
                     materials = materials,
-                    submeshNames = new string[] { actualName }
+                    submeshNames = new string[] { targetFilter.gameObject.name }
                 };
             }
             catch (Exception ex) {
@@ -2951,88 +2964,6 @@ namespace Assets.Editor.PlayCanvas {
         }
     }
 
-    public class UniversalIdConverter : JsonConverter {
-        // Список полей, которые должны быть преобразованы в int
-        private static readonly HashSet<string> IdFieldNames = new() {
-            "id", "asset", "assetId", "sourceAssetId", "sourceId", 
-            "containerAsset", "containerAssetId", "templateAssetId",
-            "materialAsset", "textureId", "modelId", "renderId",
-            "parent", "folder", "source_asset_id"
-        };
-
-        public override bool CanConvert(Type objectType) {
-            return true; // Обрабатываем все типы
-        }
-
-        public override object ReadJson(JsonReader reader, Type objectType, object existingValue, JsonSerializer serializer) {
-            if (reader.TokenType == JsonToken.Null)
-                return null;
-
-            // Для простых типов
-            if (objectType.IsPrimitive || objectType == typeof(string)) {
-                return reader.Value;
-            }
-
-            // Для объектов
-            JObject jObject = JObject.Load(reader);
-            
-            // Обрабатываем ID поля
-            foreach (var property in jObject.Properties().ToList()) {
-                if (IsIdField(property.Name) && property.Value.Type == JTokenType.String) {
-                    string strValue = property.Value.Value<string>();
-                    if (!string.IsNullOrEmpty(strValue) && int.TryParse(strValue, out int intValue)) {
-                        property.Value = intValue;
-                    }
-                }
-            }
-
-            // Удаляем null поля
-            RemoveNullProperties(jObject);
-
-            // Десериализуем обработанный объект
-            using (var subReader = jObject.CreateReader()) {
-                var result = Activator.CreateInstance(objectType);
-                serializer.Populate(subReader, result);
-                return result;
-            }
-        }
-
-        private bool IsIdField(string fieldName) {
-            // Проверяем точное совпадение или окончание на Id/ID
-            return IdFieldNames.Contains(fieldName) || 
-                fieldName.EndsWith("Id", StringComparison.OrdinalIgnoreCase) ||
-                fieldName.EndsWith("ID", StringComparison.Ordinal);
-        }
-
-        private void RemoveNullProperties(JToken token) {
-            if (token.Type == JTokenType.Object) {
-                var obj = (JObject)token;
-                var propsToRemove = obj.Properties()
-                    .Where(p => p.Value.Type == JTokenType.Null)
-                    .ToList();
-                
-                foreach (var prop in propsToRemove) {
-                    prop.Remove();
-                }
-
-                // Рекурсивно для вложенных объектов
-                foreach (var prop in obj.Properties()) {
-                    RemoveNullProperties(prop.Value);
-                }
-            }
-            else if (token.Type == JTokenType.Array) {
-                foreach (var item in token.Children()) {
-                    RemoveNullProperties(item);
-                }
-            }
-        }
-
-        public override void WriteJson(JsonWriter writer, object value, JsonSerializer serializer) {
-            throw new NotImplementedException();
-        }
-    }
-
-
     #endregion
 
     #region SceneData
@@ -3208,7 +3139,23 @@ namespace Assets.Editor.PlayCanvas {
         public int id;
         public string name;
         public string type;
-        public int? sourceId;
+        
+        // Храним как object для поддержки и строк и чисел
+        [JsonProperty("sourceId")]
+        private object _sourceId;
+        
+        // Публичное свойство для доступа как к int
+        [JsonIgnore]
+        public int? sourceId {
+            get {
+                if (_sourceId == null) return null;
+                if (_sourceId is int intVal) return intVal;
+                if (_sourceId is long longVal) return (int)longVal;
+                if (_sourceId is string strVal && int.TryParse(strVal, out int parsed)) return parsed;
+                return null;
+            }
+        }
+        
         public List<RenderInfo> renders;
     }
 
