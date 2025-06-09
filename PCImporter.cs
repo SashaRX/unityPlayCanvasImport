@@ -2036,8 +2036,10 @@ namespace Assets.Editor.PlayCanvas {
                 
                 int modelId = 0;
                 JArray materialsDataArray = null;
+                JObject jObj = null;
                 
-                if (modelData is JObject jObj) {
+                if (modelData is JObject jModelObj) {
+                    jObj = jModelObj;
                     JToken assetToken = jObj["asset"];
                     if (assetToken != null && assetToken.Type != JTokenType.Null) {
                         modelId = assetToken.Value<int>();
@@ -2076,8 +2078,9 @@ namespace Assets.Editor.PlayCanvas {
                     return false;
                 }
                 
-                // Создаем материалы на основе данных из JSON
+                // ИСПРАВЛЕНИЕ: Добавляем fallback логику как в ApplyRenderComponent
                 if (materialsDataArray != null && materialsDataArray.Count > 0) {
+                    // Создаем материалы на основе materialsData
                     Material[] materials = new Material[materialsDataArray.Count];
                     for (int i = 0; i < materialsDataArray.Count; i++) {
                         JToken matData = materialsDataArray[i];
@@ -2092,6 +2095,52 @@ namespace Assets.Editor.PlayCanvas {
                         }
                     }
                     meshRenderer.sharedMaterials = materials;
+                }
+                else if (jObj != null) {
+                    // НОВОЕ: Fallback на materialAssets если materialsData отсутствует
+                    List<int> materialIds = new();
+                    if (jObj["materialAssets"] is JArray matArray) {
+                        foreach (JToken mat in matArray) {
+                            if (mat != null && mat.Type != JTokenType.Null) {
+                                int matId = mat.Value<int>();
+                                if (matId != 0) materialIds.Add(matId);
+                            }
+                        }
+                    }
+
+                    if (materialIds.Count > 0) {
+                        if (showDebugLogs) {
+                            Debug.Log($"Using materialAssets fallback for {obj.name}, {materialIds.Count} materials");
+                        }
+                        
+                        // Создаем материалы из globalных данных
+                        Material[] materials = new Material[materialIds.Count];
+                        for (int i = 0; i < materialIds.Count; i++) {
+                            int matId = materialIds[i];
+                            string matFolderPath = GetMaterialFolderPath(matId);
+                            
+                            if (sceneData.materials != null && sceneData.materials.TryGetValue(matId, out MaterialData materialData)) {
+                                materials[i] = CreateMaterialFromPlayCanvas(materialData, matFolderPath);
+                                if (showDebugLogs) {
+                                    Debug.Log($"Created material {matId} '{materialData.name}' for model {obj.name}");
+                                }
+                            } else {
+                                Debug.LogWarning($"Material {matId} not found in global dictionary for model {obj.name}");
+                                materials[i] = new Material(Shader.Find("Universal Render Pipeline/Lit")) {
+                                    name = $"Missing_Material_{matId}"
+                                };
+                            }
+                        }
+                        meshRenderer.sharedMaterials = materials;
+                    }
+                    else {
+                        // Материал по умолчанию
+                        Debug.LogWarning($"No materials found for model {obj.name}, using default");
+                        Material defaultMat = new Material(Shader.Find("Universal Render Pipeline/Lit")) {
+                            name = "Default_Model_Material"
+                        };
+                        meshRenderer.sharedMaterial = defaultMat;
+                    }
                 }
                 
                 if (showDebugLogs) {
