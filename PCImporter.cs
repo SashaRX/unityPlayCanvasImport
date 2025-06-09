@@ -1420,23 +1420,22 @@ namespace Assets.Editor.PlayCanvas {
         private async Task ProcessContainerAssets() {
             Debug.Log("=== Processing Container Assets ===");
             
-            // Ждем обновления AssetDatabase
             AssetDatabase.Refresh();
             await Task.Delay(500);
             
-            // Обрабатываем каждый render asset с контейнером
             foreach (var renderEntry in collectedRenderAssets.Where(r => r.Value.containerAssetId.HasValue)) {
                 int renderAssetId = renderEntry.Key;
                 AssetUsageInfo renderInfo = renderEntry.Value;
                 int containerId = renderInfo.containerAssetId.Value;
                 
-                // Используем данные из словаря
                 if (sceneData.containers != null && sceneData.containers.TryGetValue(containerId, out ContainerData containerData)) {
                     // Находим правильный индекс для этого render asset
                     var renderMatch = containerData.renders.FirstOrDefault(r => r.id == renderAssetId);
                     int meshIndex = renderMatch?.index ?? renderInfo.renderIndex ?? 0;
                     
-                    Debug.Log($"Processing render asset {renderAssetId} '{renderMatch?.name}' from container {containerId} at index {meshIndex}");
+                    if (showDebugLogs) {
+                        Debug.Log($"Processing render asset {renderAssetId} from container {containerId} at index {meshIndex}");
+                    }
                     
                     // Находим FBX для контейнера
                     if (!containerToFBXMap.TryGetValue(containerId, out int fbxId)) {
@@ -1455,12 +1454,14 @@ namespace Assets.Editor.PlayCanvas {
                         continue;
                     }
                     
-                    // Извлекаем меш из FBX
+                    // Извлекаем меш из FBX по индексу
                     ProcessedAsset extracted = ExtractMeshFromFBXContainer(fbxId, fbxCached.localPath, meshIndex, renderAssetId);
                     
                     if (extracted != null) {
                         processedAssets[renderAssetId] = extracted;
-                        Debug.Log($"Successfully extracted mesh for render asset {renderAssetId}");
+                        if (showDebugLogs) {
+                            Debug.Log($"Successfully extracted mesh at index {meshIndex} for render asset {renderAssetId}");
+                        }
                     } else {
                         Debug.LogError($"Failed to extract mesh for render asset {renderAssetId}");
                     }
@@ -1489,52 +1490,27 @@ namespace Assets.Editor.PlayCanvas {
                     return null;
                 }
                 
-                Debug.Log($"FBX {fbxPath} contains {meshFilters.Length} meshes:");
-                for (int i = 0; i < meshFilters.Length; i++) {
-                    Debug.Log($"  [{i}] {meshFilters[i].gameObject.name}");
+                // Логируем для отладки
+                if (showDebugLogs) {
+                    Debug.Log($"FBX {fbxPath} contains {meshFilters.Length} meshes. Requesting index {meshIndex}");
                 }
                 
-                // Ищем меш по имени вместо индекса
-                string expectedName = null;
-                if (allAssets != null && allAssets.TryGetValue(renderAssetId, out PCAsset renderAsset)) {
-                    expectedName = renderAsset.name;
+                // ВАЖНО: Используем ТОЛЬКО индекс
+                if (meshIndex >= meshFilters.Length || meshIndex < 0) {
+                    Debug.LogError($"Mesh index {meshIndex} out of bounds. FBX has {meshFilters.Length} meshes");
+                    return null;
                 }
                 
-                MeshFilter targetFilter = null;
-                
-                // Сначала пробуем найти по точному имени
-                if (!string.IsNullOrEmpty(expectedName)) {
-                    targetFilter = meshFilters.FirstOrDefault(mf => mf.gameObject.name == expectedName);
-                    
-                    if (targetFilter != null) {
-                        Debug.Log($"Found mesh by exact name match: {expectedName}");
-                    } else {
-                        // Пробуем частичное совпадение (для случаев типа Teapot001, Teapot002)
-                        targetFilter = meshFilters.FirstOrDefault(mf => 
-                            mf.gameObject.name.StartsWith(expectedName.Substring(0, Math.Min(expectedName.Length - 3, expectedName.Length))));
-                            
-                        if (targetFilter != null) {
-                            Debug.LogWarning($"Found mesh by partial name match: {targetFilter.gameObject.name} for {expectedName}");
-                        }
-                    }
-                }
-                
-                // Если не нашли по имени, используем индекс как fallback
-                if (targetFilter == null) {
-                    if (meshIndex < meshFilters.Length) {
-                        targetFilter = meshFilters[meshIndex];
-                        Debug.LogWarning($"Using mesh by index {meshIndex}: {targetFilter.gameObject.name}");
-                    } else {
-                        Debug.LogError($"Mesh index {meshIndex} out of bounds. FBX has {meshFilters.Length} meshes");
-                        return null;
-                    }
-                }
-                
+                MeshFilter targetFilter = meshFilters[meshIndex];
                 Mesh mesh = targetFilter.sharedMesh;
                 
                 if (mesh == null) {
-                    Debug.LogError($"Mesh is null for {targetFilter.gameObject.name}");
+                    Debug.LogError($"Mesh is null at index {meshIndex}");
                     return null;
+                }
+                
+                if (showDebugLogs) {
+                    Debug.Log($"Extracted mesh at index {meshIndex}: {targetFilter.gameObject.name} for render asset {renderAssetId}");
                 }
                 
                 // Получаем материалы
@@ -1551,7 +1527,7 @@ namespace Assets.Editor.PlayCanvas {
                     prefab = fbxPrefab,
                     mesh = mesh,
                     materials = materials,
-                    submeshNames = new string[] { targetFilter.gameObject.name }
+                    submeshNames = new string[] { $"Mesh_{meshIndex}" } // Используем индекс в имени для ясности
                 };
             }
             catch (Exception ex) {
@@ -1653,98 +1629,148 @@ namespace Assets.Editor.PlayCanvas {
             return materials;
         }
 
-        private Material CreateMaterialFromPlayCanvas(MaterialData materialData, string folderPath = null) {
-            string safeName = SanitizeFileName(materialData.name);
-            
-            Material mat = new(Shader.Find("Universal Render Pipeline/Lit")) {
-                name = safeName
-            };
-
-            // Основные цвета
-            if (materialData.diffuse != null && materialData.diffuse.Length >= 3) {
-                Color diffuse = new(
-                    materialData.diffuse[0],
-                    materialData.diffuse[1],
-                    materialData.diffuse[2],
-                    1f
-                );
-                mat.SetColor("_BaseColor", diffuse);
-            }
-            
-            if (materialData.emissive != null && materialData.emissive.Length >= 3) {
-                Color emissive = new(
-                    materialData.emissive[0],
-                    materialData.emissive[1],
-                    materialData.emissive[2]
-                );
-                
-                if (emissive != Color.black || materialData.textures?.ContainsKey("emissiveMap") == true) {
-                    mat.EnableKeyword("_EMISSION");
-                    mat.SetColor("_EmissionColor", emissive * materialData.emissiveIntensity);
+    private Material CreateMaterialFromPlayCanvas(MaterialData materialData, string folderPath = null) {
+        string safeName = SanitizeFileName(materialData.name);
+        
+        // Проверяем, существует ли уже материал с таким ID
+        string cachedMatPath = assetIDMapping.GetPathById(materialData.id);
+        if (!string.IsNullOrEmpty(cachedMatPath)) {
+            Material existingMat = AssetDatabase.LoadAssetAtPath<Material>(cachedMatPath);
+            if (existingMat != null) {
+                if (showDebugLogs) {
+                    Debug.Log($"Material {materialData.id} '{safeName}' already exists at {cachedMatPath}");
                 }
+                return existingMat;
             }
-            
-            // Прозрачность
-            if (materialData.opacity < 1f) {
-                mat.SetFloat("_Surface", 1);
-                mat.SetFloat("_AlphaClip", 1);
-                mat.SetFloat("_Cutoff", materialData.opacity * 0.5f);
-            }
-            
-            // Применение текстур
-            if (materialData.textures != null) {
-                foreach (var texturePair in materialData.textures) {
-                    string pcSlot = texturePair.Key;
-                    int textureId = texturePair.Value;
-                    
-                    if (textureId == 0) continue;
-                    
-                    Texture2D tex = LoadTextureAsset(textureId);
-                    if (tex == null) continue;
-                    
-                    // Маппинг PlayCanvas слотов на Unity
-                    switch (pcSlot) {
-                        case "diffuseMap":
-                            mat.SetTexture("_BaseMap", tex);
-                            break;
-                        case "normalMap":
-                            mat.SetTexture("_BumpMap", tex);
-                            mat.EnableKeyword("_NORMALMAP");
-                            break;
-                        case "emissiveMap":
-                            mat.SetTexture("_EmissionMap", tex);
-                            break;
-                        case "metalnessMap":
-                            mat.SetTexture("_MetallicGlossMap", tex);
-                            break;
-                        case "aoMap":
-                            mat.SetTexture("_OcclusionMap", tex);
-                            break;
-                    }
-                }
-            }
-            
-            // Параметры материала
-            mat.SetFloat("_Metallic", materialData.metalness);
-            mat.SetFloat("_Smoothness", materialData.gloss);
-            
-            // Сохранение материала
-            if (string.IsNullOrEmpty(folderPath)) {
-                folderPath = GetMaterialFolderPath(materialData.id);
-            }
-            
-            string matPath = Path.Combine("Assets", folderName, folderPath).Replace('\\', '/');
-            
-            if (!AssetDatabase.IsValidFolder(matPath)) {
-                CreateFolderRecursive(matPath);
-            }
-            
-            string fullPath = $"{matPath}/{safeName}.mat";
-            AssetDatabase.CreateAsset(mat, fullPath);
-            
-            return mat;
         }
+        
+        Material mat = new(Shader.Find("Universal Render Pipeline/Lit")) {
+            name = safeName
+        };
 
+        // Основные цвета
+        if (materialData.diffuse != null && materialData.diffuse.Length >= 3) {
+            Color diffuse = new(
+                materialData.diffuse[0],
+                materialData.diffuse[1],
+                materialData.diffuse[2],
+                1f
+            );
+            mat.SetColor("_BaseColor", diffuse);
+        }
+        
+        if (materialData.emissive != null && materialData.emissive.Length >= 3) {
+            Color emissive = new(
+                materialData.emissive[0],
+                materialData.emissive[1],
+                materialData.emissive[2]
+            );
+            
+            if (emissive != Color.black || materialData.textures?.ContainsKey("emissiveMap") == true) {
+                mat.EnableKeyword("_EMISSION");
+                mat.SetColor("_EmissionColor", emissive * materialData.emissiveIntensity);
+            }
+        }
+        
+        // Прозрачность
+        if (materialData.opacity < 1f) {
+            mat.SetFloat("_Surface", 1);
+            mat.SetFloat("_AlphaClip", 1);
+            mat.SetFloat("_Cutoff", materialData.opacity * 0.5f);
+        }
+        
+        // Применение текстур
+        if (materialData.textures != null) {
+            foreach (var texturePair in materialData.textures) {
+                string pcSlot = texturePair.Key;
+                int textureId = texturePair.Value;
+                
+                if (textureId == 0) continue;
+                
+                // Ждем пока текстура загрузится
+                Texture2D tex = LoadTextureAsset(textureId);
+                if (tex == null) {
+                    Debug.LogWarning($"Texture {textureId} not loaded yet for material {materialData.name}");
+                    continue;
+                }
+                
+                if (showDebugLogs) {
+                    Debug.Log($"Applying texture {textureId} to slot {pcSlot} in material {materialData.name}");
+                }
+                
+                // Маппинг PlayCanvas слотов на Unity
+                switch (pcSlot) {
+                    case "diffuseMap":
+                        mat.SetTexture("_BaseMap", tex);
+                        break;
+                    case "normalMap":
+                        mat.SetTexture("_BumpMap", tex);
+                        mat.EnableKeyword("_NORMALMAP");
+                        break;
+                    case "emissiveMap":
+                        mat.SetTexture("_EmissionMap", tex);
+                        mat.EnableKeyword("_EMISSION");
+                        break;
+                    case "metalnessMap":
+                        mat.SetTexture("_MetallicGlossMap", tex);
+                        break;
+                    case "aoMap":
+                        mat.SetTexture("_OcclusionMap", tex);
+                        break;
+                    case "opacityMap":
+                        mat.SetTexture("_OpacityMap", tex);
+                        // Настройка прозрачности
+                        mat.SetFloat("_Surface", 1); // 1 = Transparent
+                        mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+                        mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                        mat.SetInt("_ZWrite", 0);
+                        mat.EnableKeyword("_ALPHAPREMULTIPLY_ON");
+                        mat.renderQueue = 3000; // Transparent
+                        break;
+                }
+            }
+        }
+        
+        // Параметры материала
+        mat.SetFloat("_Metallic", materialData.metalness);
+        mat.SetFloat("_Smoothness", materialData.gloss);
+        
+        // Если путь не указан, получаем его
+        if (string.IsNullOrEmpty(folderPath)) {
+            folderPath = GetMaterialFolderPath(materialData.id);
+        }
+        
+        // Убеждаемся, что у нас есть валидный путь
+        if (string.IsNullOrEmpty(folderPath)) {
+            folderPath = "content/materials/_unmapped";
+            Debug.LogWarning($"No folder path for material {materialData.id}, using default: {folderPath}");
+        }
+        
+        // Создаем полный путь
+        string matPath = Path.Combine("Assets", folderName, folderPath).Replace('\\', '/');
+        
+        if (!AssetDatabase.IsValidFolder(matPath)) {
+            CreateFolderRecursive(matPath);
+        }
+        
+        string fullPath = $"{matPath}/{safeName}.mat";
+        
+        // Создаем ассет
+        AssetDatabase.CreateAsset(mat, fullPath);
+        
+        // Регистрируем в маппинге
+        assetIDMapping.Register(materialData.id, AssetIDMapping.AssetType.Material, mat);
+        
+        if (showDebugLogs) {
+            Debug.Log($"Created material {materialData.id} '{safeName}' at {fullPath}");
+        }
+        
+        return mat;
+    }
+    
+    private string GetPlayCanvasFolderPath(int folderId) {
+        
+    }
         private void CreateFolderRecursive(string folderPath) {
             string[] parts = folderPath.Split('/');
             string currentPath = parts[0];
@@ -1760,18 +1786,22 @@ namespace Assets.Editor.PlayCanvas {
         }
 
         private string GetMaterialFolderPath(int materialId) {
-            Debug.Log($"=== GetMaterialFolderPath for material {materialId} ===");
+            if (showDebugLogs) {
+                Debug.Log($"=== GetMaterialFolderPath for material {materialId} ===");
+            }
             
             // Проверяем в allAssetsCache
             if (allAssetsCache != null && allAssetsCache.TryGetValue(materialId, out PCAsset materialAsset)) {
                 string folderPath = GetPlayCanvasFolderPath(materialAsset.folder);
-                Debug.Log($"Material {materialId} '{materialAsset.name}' has folder {materialAsset.folder} -> path: '{folderPath}'");
-                return folderPath;
+                if (showDebugLogs) {
+                    Debug.Log($"Material {materialId} '{materialAsset.name}' has folder {materialAsset.folder} -> path: '{folderPath}'");
+                }
+                return !string.IsNullOrEmpty(folderPath) ? folderPath : "content/materials";
             }
             
             // Если материал не найден в кеше, возвращаем путь по умолчанию
             Debug.LogWarning($"Material {materialId} not found in cache, using default path");
-            return "content/materials"; // Дефолтный путь как в PlayCanvas
+            return "content/materials"; // Дефолтный путь
         }
 
         private int ExtractAssetId(object renderData) {
@@ -1852,8 +1882,16 @@ namespace Assets.Editor.PlayCanvas {
                 string renderType = "";
                 JArray materialsDataArray = null;
 
-                MeshFilter meshFilter = obj.GetComponent<MeshFilter>() ?? obj.AddComponent<MeshFilter>();
-                MeshRenderer meshRenderer = obj.GetComponent<MeshRenderer>() ?? obj.AddComponent<MeshRenderer>();
+                // ВАЖНО: Сначала создаем компоненты, ПОТОМ их используем
+                MeshFilter meshFilter = obj.GetComponent<MeshFilter>();
+                if (meshFilter == null) {
+                    meshFilter = obj.AddComponent<MeshFilter>();
+                }
+                
+                MeshRenderer meshRenderer = obj.GetComponent<MeshRenderer>();
+                if (meshRenderer == null) {
+                    meshRenderer = obj.AddComponent<MeshRenderer>();
+                }
                 
                 if (renderData is JObject jObj) {
                     renderType = jObj["type"]?.Value<string>() ?? "";
@@ -1874,7 +1912,7 @@ namespace Assets.Editor.PlayCanvas {
                 if (!processedAssets.TryGetValue(assetId, out ProcessedAsset processed)) {
                     Debug.LogWarning($"No processed asset for ID {assetId} on {obj.name}");
                     
-                    // Используем существующие переменные без переобъявления
+                    // Fallback - используем куб как заглушку
                     meshFilter.sharedMesh = GetPrimitiveMesh(PrimitiveType.Cube);
                     meshRenderer.sharedMaterial = new Material(Shader.Find("Universal Render Pipeline/Lit")) {
                         name = "Missing_Material"
@@ -1882,12 +1920,9 @@ namespace Assets.Editor.PlayCanvas {
                     
                     return false;
                 }
-                                
-                // Применяем mesh и материалы
-                //MeshFilter meshFilter = obj.GetComponent<MeshFilter>() ?? obj.AddComponent<MeshFilter>();
-                meshFilter.sharedMesh = processed.mesh;
                 
-                //MeshRenderer meshRenderer = obj.GetComponent<MeshRenderer>() ?? obj.AddComponent<MeshRenderer>();
+                // Применяем mesh
+                meshFilter.sharedMesh = processed.mesh;
                 
                 // Создаем материалы на основе materialsData если есть
                 if (materialsDataArray != null && materialsDataArray.Count > 0) {
@@ -1917,6 +1952,10 @@ namespace Assets.Editor.PlayCanvas {
                 // Настройки рендеринга
                 ApplyRenderSettings(meshRenderer, renderData);
                 
+                if (showDebugLogs) {
+                    Debug.Log($"Successfully applied render component to {obj.name} with mesh from asset {assetId}");
+                }
+                
                 return true;
             }
             catch (Exception ex) {
@@ -1927,12 +1966,19 @@ namespace Assets.Editor.PlayCanvas {
 
         private bool ApplyModelComponent(GameObject obj, object modelData) {
             try {
-                Debug.Log($"ApplyModelComponent for {obj.name}");
+                if (showDebugLogs) {
+                    Debug.Log($"ApplyModelComponent for {obj.name}");
+                }
                 
-                // Проверка GameObject
-                if (obj == null) {
-                    Debug.LogError("GameObject is null!");
-                    return false;
+                // ВАЖНО: Сначала создаем компоненты
+                MeshFilter meshFilter = obj.GetComponent<MeshFilter>();
+                if (meshFilter == null) {
+                    meshFilter = obj.AddComponent<MeshFilter>();
+                }
+                
+                MeshRenderer meshRenderer = obj.GetComponent<MeshRenderer>();
+                if (meshRenderer == null) {
+                    meshRenderer = obj.AddComponent<MeshRenderer>();
                 }
                 
                 int modelId = 0;
@@ -1945,7 +1991,9 @@ namespace Assets.Editor.PlayCanvas {
                     }
                     materialsDataArray = jObj["materialsData"] as JArray;
                     
-                    Debug.Log($"Model ID: {modelId}, materialsData count: {materialsDataArray?.Count ?? 0}");
+                    if (showDebugLogs) {
+                        Debug.Log($"Model ID: {modelId}, materialsData count: {materialsDataArray?.Count ?? 0}");
+                    }
                 }
                 else if (modelData is ModelComponent modelComp) {
                     if (modelComp.asset != null) {
@@ -1960,52 +2008,29 @@ namespace Assets.Editor.PlayCanvas {
                     return false;
                 }
                 
-                Debug.Log($"Looking for processed asset {modelId} in dictionary with {processedAssets.Count} entries");
-                
                 if (!processedAssets.TryGetValue(modelId, out ProcessedAsset processed)) {
                     Debug.LogError($"No processed asset found for model {modelId}");
                     return false;
                 }
                 
-                Debug.Log($"Found processed asset with mesh: {(processed.mesh != null ? processed.mesh.name : null)}");
-                
-                // ВАЖНОЕ ИСПРАВЛЕНИЕ: Добавляем проверки и используем правильный способ добавления компонентов
-                if (!obj.TryGetComponent<MeshFilter>(out var meshFilter)) {
-                    Debug.Log($"Adding MeshFilter to {obj.name}");
-                    meshFilter = obj.AddComponent<MeshFilter>();
-                    
-                    // Дополнительная проверка после добавления
-                    if (meshFilter == null) {
-                        Debug.LogError($"Failed to add MeshFilter to {obj.name}");
-                        return false;
-                    }
-                }
-                
                 if (processed.mesh != null) {
                     meshFilter.sharedMesh = processed.mesh;
-                    Debug.Log($"Assigned mesh {processed.mesh.name} to {obj.name}");
+                    if (showDebugLogs) {
+                        Debug.Log($"Assigned mesh to {obj.name}");
+                    }
                 } else {
                     Debug.LogError($"Processed mesh is null for {obj.name}");
                     return false;
                 }
                 
-                if (!obj.TryGetComponent<MeshRenderer>(out var meshRenderer)) {
-                    Debug.Log($"Adding MeshRenderer to {obj.name}");
-                    meshRenderer = obj.AddComponent<MeshRenderer>();
-                }
-                
                 // Создаем материалы на основе данных из JSON
                 if (materialsDataArray != null && materialsDataArray.Count > 0) {
-                    Debug.Log($"Creating {materialsDataArray.Count} materials from JSON data");
                     Material[] materials = new Material[materialsDataArray.Count];
                     for (int i = 0; i < materialsDataArray.Count; i++) {
                         JToken matData = materialsDataArray[i];
                         int matId = matData["id"].Value<int>();
                         
-                        // Получаем путь папки для материала
                         string matFolderPath = GetMaterialFolderPath(matId);
-                        Debug.Log($"Creating material {matId} in folder: '{matFolderPath}'");
-                        
                         if (sceneData.materials != null && sceneData.materials.TryGetValue(matId, out MaterialData materialData)) {
                             materials[i] = CreateMaterialFromPlayCanvas(materialData, matFolderPath);
                         } else {
@@ -2016,7 +2041,9 @@ namespace Assets.Editor.PlayCanvas {
                     meshRenderer.sharedMaterials = materials;
                 }
                 
-                Debug.Log($"Successfully applied model to {obj.name}");
+                if (showDebugLogs) {
+                    Debug.Log($"Successfully applied model to {obj.name}");
+                }
                 return true;
             }
             catch (Exception ex) {
@@ -2833,44 +2860,79 @@ namespace Assets.Editor.PlayCanvas {
             return texture;
         }
 
-        private int ExtractModelId(object renderData) {
-            try {
-                if (renderData is JObject jObj) {
-                    // Сначала проверяем тип рендера
-                    string renderType = jObj["type"]?.Value<string>() ?? "";
-                    
-                    // Примитивы не имеют modelId
-                    if (renderType != "asset") {
-                        return 0;
+        private Texture2D LoadTextureAsset(int textureId) {
+            // Сначала проверяем в AssetIDMapping
+            string existingPath = assetIDMapping.GetPathById(textureId);
+            if (!string.IsNullOrEmpty(existingPath)) {
+                Texture2D existingTex = AssetDatabase.LoadAssetAtPath<Texture2D>(existingPath);
+                if (existingTex != null) {
+                    if (showDebugLogs) {
+                        Debug.Log($"Texture {textureId} already loaded from {existingPath}");
                     }
-                    
-                    // Извлекаем asset только для type="asset"
-                    JToken assetToken = jObj["asset"];
-                    if (assetToken == null || assetToken.Type == JTokenType.Null) {
-                        return 0;
-                    }
-                    return assetToken.Value<int>();
+                    return existingTex;
                 }
-                
-                if (renderData is Dictionary<string, object> dict && dict.ContainsKey("asset")) {
-                    object asset = dict["asset"];
-                    if (asset == null) return 0;
-                    return Convert.ToInt32(asset);
-                }
-                
-                // Fallback
-                string json = JsonConvert.SerializeObject(renderData);
-                JObject parsed = JObject.Parse(json);
-                
-                // Проверяем тип перед извлечением asset
-                string type = parsed["type"]?.Value<string>() ?? "";
-                if (type != "asset") return 0;
-                
-                return parsed["asset"]?.Value<int>() ?? 0;
             }
-            catch (Exception ex) {
-                Debug.LogError($"Failed to extract model ID: {ex.Message}");
-                return 0;
+            
+            // Проверяем в кеше
+            if (!assetCache.entries.TryGetValue(textureId, out AssetCacheEntry cached)) {
+                Debug.LogWarning($"Texture {textureId} not found in cache - may not be downloaded yet");
+                return null;
+            }
+            
+            if (!File.Exists(cached.localPath)) {
+                Debug.LogError($"Texture file not found: {cached.localPath}");
+                return null;
+            }
+            
+            // Загружаем текстуру из файла
+            Texture2D texture = AssetDatabase.LoadAssetAtPath<Texture2D>(cached.localPath);
+            if (texture == null) {
+                Debug.LogError($"Failed to load texture from {cached.localPath}");
+                
+                // Пробуем принудительно импортировать
+                AssetDatabase.ImportAsset(cached.localPath, ImportAssetOptions.ForceUpdate);
+                texture = AssetDatabase.LoadAssetAtPath<Texture2D>(cached.localPath);
+            }
+            
+            if (texture != null) {
+                assetIDMapping.Register(textureId, AssetIDMapping.AssetType.Texture, texture);
+                if (showDebugLogs) {
+                    Debug.Log($"Successfully loaded texture {textureId} from {cached.localPath}");
+                }
+            }
+            
+            return texture;
+        }
+
+        private void DebugFailedAssets() {
+            Debug.Log("=== Debugging Failed Assets ===");
+            
+            foreach (EntityIDMapping.Entry entry in entityMapping.entries) {
+                if (entry.gameObject == null) continue;
+                
+                Entity entity = originalEntities[entry.id];
+                if (entity?.components == null) continue;
+                
+                bool hasRenderOrModel = entity.components.ContainsKey("render") || entity.components.ContainsKey("model");
+                if (!hasRenderOrModel) continue;
+                
+                // Проверяем, есть ли меш
+                MeshFilter mf = entry.gameObject.GetComponent<MeshFilter>();
+                if (mf == null || mf.sharedMesh == null) {
+                    Debug.LogError($"Failed object: {entry.gameObject.name} - No mesh assigned");
+                    
+                    // Проверяем какой компонент
+                    if (entity.components.ContainsKey("render")) {
+                        Debug.Log($"  - Has render component");
+                        if (entity.components["render"] is JObject renderObj) {
+                            Debug.Log($"    Type: {renderObj["type"]}");
+                            Debug.Log($"    Asset: {renderObj["asset"]}");
+                        }
+                    }
+                    if (entity.components.ContainsKey("model")) {
+                        Debug.Log($"  - Has model component");
+                    }
+                }
             }
         }
 
