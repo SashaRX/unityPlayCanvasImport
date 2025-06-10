@@ -299,11 +299,14 @@ namespace Assets.Editor.PlayCanvas {
                 EditorApplication.delayCall += async () => {
                     try {
                         LoadSceneDataFromJsonFile(entityJsonPath);
-
+                        
                         if (sceneData?.root == null) {
                             Debug.LogError("Scene data not loaded or invalid. Aborting import.");
                             return;
                         }
+                        
+                        // Очищаем processedAssets в начале нового импорта
+                        processedAssets.Clear();
 
                         stats = new SceneStatistics();
                         CollectSceneStats(sceneData.root, ref stats);
@@ -319,16 +322,36 @@ namespace Assets.Editor.PlayCanvas {
                         CollectAssetDependencies(sceneData.root);
                         
                         await DownloadSceneAssetsOptimized();
-                        
-                        // Новый шаг - обработка container/render assets
+
+
+                        Debug.Log($"=== containerToFBXMap check ===");
+                        Debug.Log($"containerToFBXMap count: {containerToFBXMap.Count}");
+                        foreach (var kvp in containerToFBXMap) {
+                            Debug.Log($"  Container {kvp.Key} -> FBX {kvp.Value}");
+                        }
+
+                        Debug.Log($"=== Before ProcessContainerAssets ===");
+                        Debug.Log($"collectedRenderAssets count: {collectedRenderAssets.Count}");
+                        Debug.Log($"processedAssets count: {processedAssets.Count}");
+
                         await ProcessContainerAssets();
-                        
+
+                        Debug.Log($"After ProcessContainerAssets: processedAssets.Count = {processedAssets.Count}");
+
                         await PostProcessImportedAssets();
-                        
+
+                        Debug.Log($"After PostProcessImportedAssets: processedAssets.Count = {processedAssets.Count}");
+
                         ClearSceneHierarchy();
+
+                        Debug.Log($"After ClearSceneHierarchy: processedAssets.Count = {processedAssets.Count}");
+
                         CreateGameObjectHierarchy(sceneData.root);
-                        
+
                         ApplyHDRAtlas();
+
+                        Debug.Log($"Before ApplyAssetsToScene: processedAssets.Count = {processedAssets.Count}");
+
                         ApplyAssetsToScene();
                         
                         Debug.Log("Full import complete!");
@@ -609,19 +632,23 @@ namespace Assets.Editor.PlayCanvas {
             return lightMaterialsDirectory;
         }
 
-        private void ClearSceneHierarchy() { // Очищаем иерархию сцены
+        private void ClearSceneHierarchy() {
             entityMapping.entries.Clear();
+            idToGameObject.Clear();
+            originalEntities.Clear();
+            // processedAssets.Clear(); // <-- УДАЛИТЕ ЭТУ СТРОКУ
+            
             EditorUtility.SetDirty(entityMapping);
-
+            
             Scene scene = SceneManager.GetActiveScene();
             GameObject[] rootObjects = scene.GetRootGameObjects();
-
+            
             foreach (GameObject rootObject in rootObjects) {
                 if ((rootObject.hideFlags & (HideFlags.NotEditable | HideFlags.HideAndDontSave)) == 0) {
                     GameObject.DestroyImmediate(rootObject);
                 }
             }
-
+            
             if (showDebugLogs) Debug.Log("Scene hierarchy cleared.");
         }
 
@@ -958,31 +985,52 @@ namespace Assets.Editor.PlayCanvas {
         }
 
         public static void ApplyPlayCanvasTransform(GameObject obj, Vector3 pcPosition, Vector3 pcEulerAngles, Vector3 pcScale, bool isModel = false) {
-            // Create transformation matrix and inversion matrix
+            // Базовые матрицы
             Matrix4x4 Mpc = Matrix4x4.TRS(pcPosition, EulerToQuaternion(pcEulerAngles), pcScale);
             Matrix4x4 C = Matrix4x4.Scale(new Vector3(1f, 1f, -1f));
-
-            // Transform matrix and extract position, scale, rotation
+            
             Matrix4x4 Mu = C * Mpc * C;
             Vector3 posU = Mu.GetColumn(3);
-            Vector3 scaleU = new(
+            Vector3 scaleU = new Vector3(
                 Mu.GetColumn(0).magnitude,
                 Mu.GetColumn(1).magnitude,
                 Mu.GetColumn(2).magnitude
             );
-
-            // Check and correct scale
+            
+            // Защита от нулевого масштаба
             scaleU = new Vector3(
                 Mathf.Approximately(scaleU.x, 0f) ? 1f : scaleU.x,
                 Mathf.Approximately(scaleU.y, 0f) ? 1f : scaleU.y,
                 Mathf.Approximately(scaleU.z, 0f) ? 1f : scaleU.z
             );
-
+            
+            // СПЕЦИАЛЬНАЯ ОБРАБОТКА для ComplexMesh
+            if (obj.name == "ComplexMesh") {
+                scaleU.y = -scaleU.y;
+                //if(showDebugLogs) 
+                Debug.Log($"ComplexMesh: inverted Y scale to {scaleU.y}");
+                //if (showDebugLogs) Debug.Log($"ComplexMesh: inverted Y scale to {scaleU.y}");
+            }
+            
+            // Базовая ротация
             Quaternion rotU = isModel 
-            ? GetUnityRotationForModel(pcEulerAngles)
-            : GetUnityRotation(pcEulerAngles);
-
-            // Apply transformation
+                ? GetUnityRotationForModel(pcEulerAngles)
+                : GetUnityRotation(pcEulerAngles);
+            
+            // ДОПОЛНИТЕЛЬНАЯ РОТАЦИЯ для субмешей
+            bool isSubmesh = (obj.name.StartsWith("Box") || 
+                              obj.name.StartsWith("Teapot") || 
+                              obj.name.StartsWith("Pyramid")) &&
+                              obj.transform.parent != null && 
+                              obj.transform.parent.name.Contains("Dummy");
+                            
+            if (isSubmesh) {
+                Quaternion additionalRotation = Quaternion.Euler(90f, 0f, 0f);
+                rotU = rotU * additionalRotation;
+                Debug.Log($"{obj.name}: added 90° X rotation");
+            }
+            
+            // Применяем трансформации
             obj.transform.SetLocalPositionAndRotation(posU, rotU);
             obj.transform.localScale = scaleU;
         }
@@ -1181,7 +1229,6 @@ namespace Assets.Editor.PlayCanvas {
             try {
                 if (renderObj is JObject jObj) {
                     Debug.Log($"Processing render dependencies for {entity.name}");
-                    Debug.Log($"  Properties: {string.Join(", ", jObj.Properties().Select(p => p.Name))}");
                     
                     string renderType = jObj["type"]?.Value<string>() ?? "";
                     
@@ -1200,6 +1247,8 @@ namespace Assets.Editor.PlayCanvas {
                         if (indexToken != null && indexToken.Type != JTokenType.Null) {
                             renderIndex = indexToken.Value<int>();
                         }
+
+                        Debug.Log($"  Render asset {renderAssetId}: container={containerAssetId}, index={renderIndex}");
                     }
                     
                     // Получаем материалы
@@ -1235,6 +1284,8 @@ namespace Assets.Editor.PlayCanvas {
                     AssetUsageInfo renderInfo = collectedRenderAssets[renderAssetId];
                     renderInfo.containerAssetId = containerAssetId;
                     renderInfo.renderIndex = renderIndex;
+
+                    Debug.Log($"  Saved container info for render {renderAssetId}");
                 }
             }
 
@@ -1384,24 +1435,24 @@ namespace Assets.Editor.PlayCanvas {
         }
 
         private async Task PostProcessImportedAssets() {
-            // Добавляем отладку
-            Debug.Log($"PostProcessImportedAssets: collectedModels={collectedModels.Count}, cache entries={assetCache?.entries?.Count ?? 0}");
+            Debug.Log($"=== PostProcessImportedAssets START ===");
+            Debug.Log($"processedAssets count at start: {processedAssets.Count}");
             
-            // Ждем обновления AssetDatabase после загрузки файлов
             AssetDatabase.Refresh();
             await Task.Delay(500);
-                    
-            // Обрабатываем все загруженные FBX
-            foreach (KeyValuePair<int, AssetUsageInfo> modelEntry in collectedModels) {
+            
+            // Обрабатываем модели
+            foreach (var modelEntry in collectedModels) {
                 int modelId = modelEntry.Key;
+                Debug.Log($"Processing model {modelId}");
                 
                 if (!assetCache.entries.TryGetValue(modelId, out AssetCacheEntry cached)) {
-                    Debug.LogWarning($"Model {modelId} not in cache - may have failed to download");
+                    Debug.LogWarning($"Model {modelId} not in cache");
                     
-                    // ИСПРАВЛЕНИЕ: Создаем заглушку для отсутствующих моделей
+                    // Создаем заглушку
                     processedAssets[modelId] = new ProcessedAsset {
                         prefab = null,
-                        mesh = GetPrimitiveMesh(PrimitiveType.Cube), // Используем куб как заглушку
+                        mesh = GetPrimitiveMesh(PrimitiveType.Cube),
                         materials = new Material[] { new Material(Shader.Find("Universal Render Pipeline/Lit")) },
                         submeshNames = new string[] { "Missing_Model" }
                     };
@@ -1413,16 +1464,17 @@ namespace Assets.Editor.PlayCanvas {
                     continue;
                 }
                 
-                // Обрабатываем FBX
                 ProcessedAsset processed = ProcessFBXAsset(modelId, cached.localPath);
                 if (processed != null) {
                     processedAssets[modelId] = processed;
-                    Debug.Log($"Processed model {modelId}: {cached.localPath}");
+                    Debug.Log($"✓ Processed model {modelId}: {cached.localPath}");
                 } else {
-                    Debug.LogError($"Failed to process model {modelId}");
+                    Debug.LogError($"✗ Failed to process model {modelId}");
                 }
             }
-
+            
+            Debug.Log($"=== PostProcessImportedAssets complete. Total in processedAssets: {processedAssets.Count} ===");
+            
             EditorUtility.SetDirty(assetIDMapping);
             AssetDatabase.SaveAssets();
         }
@@ -1433,29 +1485,35 @@ namespace Assets.Editor.PlayCanvas {
             AssetDatabase.Refresh();
             await Task.Delay(500);
             
-            foreach (var renderEntry in collectedRenderAssets.Where(r => r.Value.containerAssetId.HasValue)) {
+            foreach (var renderEntry in collectedRenderAssets) {
                 int renderAssetId = renderEntry.Key;
                 AssetUsageInfo renderInfo = renderEntry.Value;
+                
+                Debug.Log($"Processing render asset {renderAssetId}");
+                
+                if (!renderInfo.containerAssetId.HasValue) {
+                    Debug.LogWarning($"Render asset {renderAssetId} has no container ID");
+                    continue;
+                }
+                
                 int containerId = renderInfo.containerAssetId.Value;
                 
                 if (sceneData.containers != null && sceneData.containers.TryGetValue(containerId, out ContainerData containerData)) {
-                    // Находим правильный индекс для этого render asset
+                    // Находим правильный индекс
                     var renderMatch = containerData.renders.FirstOrDefault(r => r.id == renderAssetId);
                     int meshIndex = renderMatch?.index ?? renderInfo.renderIndex ?? 0;
                     
-                    if (showDebugLogs) {
-                        Debug.Log($"Processing render asset {renderAssetId} from container {containerId} at index {meshIndex}");
-                    }
+                    Debug.Log($"  Container: {containerId}, Mesh index: {meshIndex}");
                     
                     // Находим FBX для контейнера
                     if (!containerToFBXMap.TryGetValue(containerId, out int fbxId)) {
-                        Debug.LogError($"No FBX mapping found for container {containerId}");
+                        Debug.LogError($"No FBX mapping for container {containerId}");
                         continue;
                     }
                     
-                    // Проверяем, загружен ли FBX
+                    // Проверяем кеш
                     if (!assetCache.entries.TryGetValue(fbxId, out AssetCacheEntry fbxCached)) {
-                        Debug.LogError($"FBX {fbxId} not in cache for container {containerId}");
+                        Debug.LogError($"FBX {fbxId} not in cache");
                         continue;
                     }
                     
@@ -1464,84 +1522,102 @@ namespace Assets.Editor.PlayCanvas {
                         continue;
                     }
                     
-                    // Извлекаем меш из FBX по индексу
+                    Debug.Log($"Extracting mesh from FBX...");
+                    
+                    // ВАЖНО: ВЫЗОВ МЕТОДА ИЗВЛЕЧЕНИЯ
                     ProcessedAsset extracted = ExtractMeshFromFBXContainer(fbxId, fbxCached.localPath, meshIndex, renderAssetId);
                     
                     if (extracted != null) {
                         processedAssets[renderAssetId] = extracted;
-                        if (showDebugLogs) {
-                            Debug.Log($"Successfully extracted mesh at index {meshIndex} for render asset {renderAssetId}");
-                        }
+                        Debug.Log($"✓ Successfully processed render asset {renderAssetId}");
                     } else {
-                        Debug.LogError($"Failed to extract mesh for render asset {renderAssetId}");
+                        Debug.LogError($"✗ Failed to extract mesh for render asset {renderAssetId}");
                     }
                 } else {
-                    Debug.LogError($"Container {containerId} not found in scene data dictionary");
+                    Debug.LogError($"Container {containerId} not found in scene data");
                 }
             }
             
-            Debug.Log($"Processed {processedAssets.Count} render assets from containers");
+            Debug.Log($"=== ProcessContainerAssets complete. Total processed: {processedAssets.Count} ===");
         }
-
+                
         private ProcessedAsset ExtractMeshFromFBXContainer(int fbxId, string fbxPath, int meshIndex, int renderAssetId) {
             try {
-                // Загружаем FBX как GameObject
+                Debug.Log($"=== ExtractMeshFromFBXContainer ===");
+                Debug.Log($"  FBX: {fbxPath}");
+                Debug.Log($"  Mesh index: {meshIndex}");
+                Debug.Log($"  Render ID: {renderAssetId}");
+                
                 GameObject fbxPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath);
                 if (fbxPrefab == null) {
-                    Debug.LogError($"Failed to load FBX: {fbxPath}");
+                    Debug.LogError($"Failed to load FBX as GameObject!");
                     return null;
                 }
                 
-                // Получаем все MeshFilter с учетом иерархии
+                Debug.Log($"FBX loaded: {fbxPrefab.name}");
+                
+                // Получаем все MeshFilter
                 MeshFilter[] meshFilters = fbxPrefab.GetComponentsInChildren<MeshFilter>();
+                Debug.Log($"Found {meshFilters.Length} MeshFilters");
                 
                 if (meshFilters.Length == 0) {
-                    Debug.LogError($"No mesh filters found in FBX: {fbxPath}");
+                    Debug.LogError($"No mesh filters found!");
                     return null;
                 }
                 
-                // Логируем для отладки
-                if (showDebugLogs) {
-                    Debug.Log($"FBX {fbxPath} contains {meshFilters.Length} meshes. Requesting index {meshIndex}");
+                // Выводим все меши для отладки
+                for (int i = 0; i < meshFilters.Length; i++) {
+                    Debug.Log($"  [{i}] {meshFilters[i].gameObject.name}");
                 }
                 
-                // ВАЖНО: Используем ТОЛЬКО индекс
-                if (meshIndex >= meshFilters.Length || meshIndex < 0) {
-                    Debug.LogError($"Mesh index {meshIndex} out of bounds. FBX has {meshFilters.Length} meshes");
+                // Сортируем по имени
+                var sortedMeshFilters = meshFilters
+                    .OrderBy(mf => mf.gameObject.name, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                
+                Debug.Log("After sorting:");
+                for (int i = 0; i < sortedMeshFilters.Length; i++) {
+                    Debug.Log($"  [{i}] {sortedMeshFilters[i].gameObject.name}");
+                }
+                
+                if (meshIndex >= sortedMeshFilters.Length || meshIndex < 0) {
+                    Debug.LogError($"Index {meshIndex} out of bounds! Array length: {sortedMeshFilters.Length}");
                     return null;
                 }
                 
-                MeshFilter targetFilter = meshFilters[meshIndex];
+                MeshFilter targetFilter = sortedMeshFilters[meshIndex];
                 Mesh mesh = targetFilter.sharedMesh;
                 
                 if (mesh == null) {
-                    Debug.LogError($"Mesh is null at index {meshIndex}");
+                    Debug.LogError($"Mesh is null!");
                     return null;
                 }
                 
-                if (showDebugLogs) {
-                    Debug.Log($"Extracted mesh at index {meshIndex}: {targetFilter.gameObject.name} for render asset {renderAssetId}");
-                }
+                Debug.Log($"✓ Got mesh: {mesh.name} from {targetFilter.gameObject.name}");
                 
                 // Получаем материалы
                 Material[] materials = null;
                 MeshRenderer renderer = targetFilter.GetComponent<MeshRenderer>();
-                if (renderer != null && renderer.sharedMaterials != null) {
+                if (renderer != null) {
                     materials = renderer.sharedMaterials;
+                    Debug.Log($"Found {materials?.Length ?? 0} materials");
                 }
                 
-                // Регистрируем в AssetIDMapping
+                // Регистрируем
                 assetIDMapping.Register(renderAssetId, AssetIDMapping.AssetType.Model, mesh);
                 
-                return new ProcessedAsset {
+                ProcessedAsset result = new ProcessedAsset {
                     prefab = fbxPrefab,
                     mesh = mesh,
                     materials = materials,
-                    submeshNames = new string[] { $"Mesh_{meshIndex}" } // Используем индекс в имени для ясности
+                    submeshNames = new string[] { targetFilter.gameObject.name }
                 };
+                
+                Debug.Log($"✓ ExtractMeshFromFBXContainer SUCCESS");
+                return result;
             }
             catch (Exception ex) {
-                Debug.LogError($"Error extracting mesh from FBX: {ex.Message}\n{ex.StackTrace}");
+                Debug.LogError($"ExtractMeshFromFBXContainer EXCEPTION: {ex.Message}\n{ex.StackTrace}");
                 return null;
             }
         }
@@ -1957,7 +2033,7 @@ namespace Assets.Editor.PlayCanvas {
                 
                 // Приоритет 1: materialAssets из render компонента
                 if (materialAssetsArray != null && materialAssetsArray.Count > 0) {
-                    Debug.Log($"Creating materials from materialAssets array");
+                    Debug.Log($"Creating materials from materialAssets array: {materialAssetsArray.Count} items");
                     List<int> materialIds = new();
                     
                     foreach (JToken mat in materialAssetsArray) {
@@ -1971,7 +2047,9 @@ namespace Assets.Editor.PlayCanvas {
                     }
                     
                     if (materialIds.Count > 0) {
+                        Debug.Log($"Calling CreateMaterialsFromIds with {materialIds.Count} IDs");
                         finalMaterials = CreateMaterialsFromIds(materialIds);
+                        Debug.Log($"CreateMaterialsFromIds returned {finalMaterials?.Length ?? 0} materials");
                     }
                 }
                 // Приоритет 2: materialsData (если есть)
