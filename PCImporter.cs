@@ -1,5 +1,7 @@
 #if UNITY_EDITOR
 #region using
+
+
 // System
 using System;
 using System.Globalization;
@@ -17,6 +19,7 @@ using System.Reflection;
 // Newtonsoft
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+
 
 // Unity
 using UnityEditor;
@@ -74,8 +77,7 @@ namespace Assets.Editor.PlayCanvas {
         private static Mesh diskMesh       = null; // Кэшированный меш для диска
 
         private static bool _albedoOnly = false;           // true → игнорируем AO/Normal/прочее
-        private static readonly HashSet<string> kKeepSlots = new()
-        {
+        private static readonly HashSet<string> kKeepSlots = new(){
             "diffuseMap",
             "emissiveMap",
             "opacityMap"
@@ -105,7 +107,7 @@ namespace Assets.Editor.PlayCanvas {
         private const string folderMappingPath = "FolderMapping.asset"; // Папка для хранения данных
         private const string assetMappingPath = "AssetIDMapping.asset";
 
-        #region Asset Dependencies
+        #region AssetDependencies
 
         // Enum для статусов ассетов
         private enum AssetStatus {
@@ -212,7 +214,7 @@ namespace Assets.Editor.PlayCanvas {
             public float priority; // Вычисляемый приоритет
         }
 
-        #endregion Asset Dependencies
+        #endregion AssetDependencies
 
         [MenuItem("Window/PlayCanvas")]
 
@@ -636,7 +638,6 @@ namespace Assets.Editor.PlayCanvas {
             entityMapping.entries.Clear();
             idToGameObject.Clear();
             originalEntities.Clear();
-            // processedAssets.Clear(); // <-- УДАЛИТЕ ЭТУ СТРОКУ
             
             EditorUtility.SetDirty(entityMapping);
             
@@ -914,18 +915,6 @@ namespace Assets.Editor.PlayCanvas {
 
         #region CreateGameObjects
 
-        private static Quaternion GetUnityRotationForModel(Vector3 pcEuler){
-            // 1) X — повернуть на −90
-            float x = pcEuler.x - 90f;
-
-            // 2) Y ← Z  |  3) Z ← Y + 180
-            float y = pcEuler.z;
-            float z = 180f - pcEuler.y;
-
-            return Quaternion.Euler(x, y, z);
-        }
-
-
         void CreateGameObjectHierarchy(Entity entity, GameObject parent = null) {
             // Проверяем, существует ли сущность
             if (originalEntities.ContainsKey(entity.id)) {
@@ -959,13 +948,11 @@ namespace Assets.Editor.PlayCanvas {
             Vector3 pcEuler = new(entity.rotation[0], entity.rotation[1], entity.rotation[2]);
             Vector3 pcScale = new(entity.scale[0],    entity.scale[1],    entity.scale[2]);
 
-            bool isModel = entity.components != null &&
-                        (entity.components.ContainsKey("model") ||
-                        (entity.components.TryGetValue("render", out var r) &&
-                            r is JObject rObj &&
-                            rObj["type"]?.ToString() == "asset"));
-
+            bool isModel = entity.components != null && entity.components.ContainsKey("model");// ||(entity.components.TryGetValue("render", out var r) && r is JObject rObj && rObj["type"]?.ToString() == "asset"));
+            
             ApplyPlayCanvasTransform(obj, pcPos, pcEuler, pcScale, isModel);
+
+            Debug.Log($"Created GameObject: {obj.name} isModel = {isModel}, ID = {entity.id}");
 
             // Добавляем запись в entityMapping
             entityMapping.entries.Add(new EntityIDMapping.Entry {
@@ -987,7 +974,7 @@ namespace Assets.Editor.PlayCanvas {
         public static void ApplyPlayCanvasTransform(GameObject obj, Vector3 pcPosition, Vector3 pcEulerAngles, Vector3 pcScale, bool isModel = false) {
             // Базовые матрицы
             Matrix4x4 Mpc = Matrix4x4.TRS(pcPosition, EulerToQuaternion(pcEulerAngles), pcScale);
-            Matrix4x4 C = Matrix4x4.Scale(new Vector3(1f, 1f, -1f));
+            Matrix4x4 C   = Matrix4x4.Scale(new Vector3(1f, 1f, -1f));
             
             Matrix4x4 Mu = C * Mpc * C;
             Vector3 posU = Mu.GetColumn(3);
@@ -1003,32 +990,8 @@ namespace Assets.Editor.PlayCanvas {
                 Mathf.Approximately(scaleU.y, 0f) ? 1f : scaleU.y,
                 Mathf.Approximately(scaleU.z, 0f) ? 1f : scaleU.z
             );
-            
-            // СПЕЦИАЛЬНАЯ ОБРАБОТКА для ComplexMesh
-            if (obj.name == "ComplexMesh") {
-                scaleU.y = -scaleU.y;
-                //if(showDebugLogs) 
-                Debug.Log($"ComplexMesh: inverted Y scale to {scaleU.y}");
-                //if (showDebugLogs) Debug.Log($"ComplexMesh: inverted Y scale to {scaleU.y}");
-            }
-            
-            // Базовая ротация
-            Quaternion rotU = isModel 
-                ? GetUnityRotationForModel(pcEulerAngles)
-                : GetUnityRotation(pcEulerAngles);
-            
-            // ДОПОЛНИТЕЛЬНАЯ РОТАЦИЯ для субмешей
-            bool isSubmesh = (obj.name.StartsWith("Box") || 
-                              obj.name.StartsWith("Teapot") || 
-                              obj.name.StartsWith("Pyramid")) &&
-                              obj.transform.parent != null && 
-                              obj.transform.parent.name.Contains("Dummy");
-                            
-            if (isSubmesh) {
-                Quaternion additionalRotation = Quaternion.Euler(90f, 0f, 0f);
-                rotU = rotU * additionalRotation;
-                Debug.Log($"{obj.name}: added 90° X rotation");
-            }
+
+            Quaternion rotU = isModel ? EulerToQuaternion(new Vector3(pcEulerAngles.x, -pcEulerAngles.y, pcEulerAngles.z)) : GetUnityRotation(pcEulerAngles);//Quaternion.Euler(pcEulerAngles); // G
             
             // Применяем трансформации
             obj.transform.SetLocalPositionAndRotation(posU, rotU);
@@ -1042,17 +1005,18 @@ namespace Assets.Editor.PlayCanvas {
             Quaternion qz = Quaternion.AngleAxis(eulerAngles.z, Vector3.forward);
             return qz * qy * qx; // XYZ порядок
         }
+
         // Получает поворот для Unity
         private static Quaternion GetUnityRotation(Vector3 pcEulerAngles){
             // Альтернативный путь для других поворотов: преобразуем через кватернион
             Quaternion pcQuat = EulerToQuaternion(pcEulerAngles);
 
             // Инверсия Z: корректируем кватернион
-            Matrix4x4 C = Matrix4x4.Scale(new Vector3(1f, 1f, -1f));
-            Matrix4x4 Mpc = Matrix4x4.Rotate(pcQuat);
-            Matrix4x4 Mu = C * Mpc * C;
+            Matrix4x4 C      = Matrix4x4.Scale(new Vector3(1f, 1f, -1f));
+            Matrix4x4 Mpc    = Matrix4x4.Rotate(pcQuat);
+            Matrix4x4 Mu     = C * Mpc * C;
             Vector3 forwardU = Mu.GetColumn(2).normalized;
-            Vector3 upU = Mu.GetColumn(1).normalized;
+            Vector3 upU      = Mu.GetColumn(1).normalized;
 
             // Проверка на ортогональность
             if (Vector3.Dot(forwardU, upU) > 0.99f){
@@ -2454,97 +2418,97 @@ namespace Assets.Editor.PlayCanvas {
         }
 
         private async Task<Dictionary<int, string>> FetchFoldersFromAPI() {
-        Dictionary<int, string> folderPaths = new();
-        
-        Debug.Log("=== Starting folder fetch from PlayCanvas API ===");
-        
-        string url = $"https://playcanvas.com/api/projects/{projectId}/assets?branchId={branchId}&limit=10000";
-        
-        using HttpClient client = new();
-        client.DefaultRequestHeaders.Add("Authorization", $"Bearer {tokenId}");
-        
-        try {
-            Debug.Log($"Fetching from: {url}");
-            string json = await client.GetStringAsync(url);
-            JObject root = JObject.Parse(json);
+            Dictionary<int, string> folderPaths = new();
             
-            if (root["result"] is JArray resultArray) {
-                Debug.Log($"API returned {resultArray.Count} assets");
+            Debug.Log("=== Starting folder fetch from PlayCanvas API ===");
+            
+            string url = $"https://playcanvas.com/api/projects/{projectId}/assets?branchId={branchId}&limit=10000";
+            
+            using HttpClient client = new();
+            client.DefaultRequestHeaders.Add("Authorization", $"Bearer {tokenId}");
+            
+            try {
+                Debug.Log($"Fetching from: {url}");
+                string json = await client.GetStringAsync(url);
+                JObject root = JObject.Parse(json);
                 
-                // Шаг 1: Собираем все папки
-                Dictionary<int, FolderNode> allFolders = new();
-                List<FolderNode> rootFolders = new();
-                int folderCount = 0;
-                
-                foreach (JToken item in resultArray) {
-                    if ((string)item["type"] != "folder") continue;
+                if (root["result"] is JArray resultArray) {
+                    Debug.Log($"API returned {resultArray.Count} assets");
                     
-                    folderCount++;
+                    // Шаг 1: Собираем все папки
+                    Dictionary<int, FolderNode> allFolders = new();
+                    List<FolderNode> rootFolders = new();
+                    int folderCount = 0;
                     
-                    FolderNode folder = new() {
-                        id = (int)item["id"],
-                        name = (string)item["name"],
-                        parentId = null
-                    };
-                    
-                    // Безопасная обработка parent
-                    JToken parentToken = item["parent"];
-                    if (parentToken != null && parentToken.Type != JTokenType.Null) {
-                        folder.parentId = parentToken.Value<int>();
-                    }
-                    
-                    allFolders[folder.id] = folder;
-                    
-                    if (!folder.parentId.HasValue || folder.parentId.Value == 0) {
-                        rootFolders.Add(folder);
-                    }
-                }
-                
-                Debug.Log($"Found {folderCount} folders, {rootFolders.Count} root folders");
-                
-                // Шаг 2: Строим дерево папок
-                foreach (var folder in allFolders.Values) {
-                    if (folder.parentId.HasValue && folder.parentId.Value != 0) {
-                        if (allFolders.TryGetValue(folder.parentId.Value, out FolderNode parent)) {
-                            parent.children.Add(folder);
-                        } else {
+                    foreach (JToken item in resultArray) {
+                        if ((string)item["type"] != "folder") continue;
+                        
+                        folderCount++;
+                        
+                        FolderNode folder = new() {
+                            id = (int)item["id"],
+                            name = (string)item["name"],
+                            parentId = null
+                        };
+                        
+                        // Безопасная обработка parent
+                        JToken parentToken = item["parent"];
+                        if (parentToken != null && parentToken.Type != JTokenType.Null) {
+                            folder.parentId = parentToken.Value<int>();
+                        }
+                        
+                        allFolders[folder.id] = folder;
+                        
+                        if (!folder.parentId.HasValue || folder.parentId.Value == 0) {
                             rootFolders.Add(folder);
                         }
                     }
-                }
-                
-                // Шаг 3: Рекурсивно строим полные пути
-                foreach (var rootFolder in rootFolders) {
-                    BuildFolderPaths(rootFolder, "", folderPaths);
-                }
-                
-                Debug.Log($"Built {folderPaths.Count} folder paths");
-                
-                // Шаг 4: Сохраняем в FolderMapping
-                foreach (var kvp in folderPaths) {
-                    folderMapping.AddFolder(kvp.Key, allFolders[kvp.Key].name, kvp.Value);
                     
-                    if (showDebugLogs && folderPaths.Count < 20) {
-                        Debug.Log($"Folder {kvp.Key}: {kvp.Value}");
+                    Debug.Log($"Found {folderCount} folders, {rootFolders.Count} root folders");
+                    
+                    // Шаг 2: Строим дерево папок
+                    foreach (var folder in allFolders.Values) {
+                        if (folder.parentId.HasValue && folder.parentId.Value != 0) {
+                            if (allFolders.TryGetValue(folder.parentId.Value, out FolderNode parent)) {
+                                parent.children.Add(folder);
+                            } else {
+                                rootFolders.Add(folder);
+                            }
+                        }
+                    }
+                    
+                    // Шаг 3: Рекурсивно строим полные пути
+                    foreach (var rootFolder in rootFolders) {
+                        BuildFolderPaths(rootFolder, "", folderPaths);
+                    }
+                    
+                    Debug.Log($"Built {folderPaths.Count} folder paths");
+                    
+                    // Шаг 4: Сохраняем в FolderMapping
+                    foreach (var kvp in folderPaths) {
+                        folderMapping.AddFolder(kvp.Key, allFolders[kvp.Key].name, kvp.Value);
+                        
+                        if (showDebugLogs && folderPaths.Count < 20) {
+                            Debug.Log($"Folder {kvp.Key}: {kvp.Value}");
+                        }
                     }
                 }
+                else {
+                    Debug.LogError("No 'result' array in API response!");
+                }
             }
-            else {
-                Debug.LogError("No 'result' array in API response!");
+            catch (Exception ex) {
+                Debug.LogError($"Failed to fetch folders: {ex.Message}\n{ex.StackTrace}");
             }
-        }
-        catch (Exception ex) {
-            Debug.LogError($"Failed to fetch folders: {ex.Message}\n{ex.StackTrace}");
-        }
-        
-        // Сохраняем изменения
-        EditorUtility.SetDirty(folderMapping);
-        AssetDatabase.SaveAssets();
-        
-        Debug.Log($"=== Folder fetch complete. Total folders in mapping: {folderMapping.folders.Count} ===");
-        
-        return folderPaths;
-    }
+            
+            // Сохраняем изменения
+            EditorUtility.SetDirty(folderMapping);
+            AssetDatabase.SaveAssets();
+            
+            Debug.Log($"=== Folder fetch complete. Total folders in mapping: {folderMapping.folders.Count} ===");
+            
+            return folderPaths;
+        }   
 
         private void BuildFolderPaths(FolderNode folder, string parentPath, Dictionary<int, string> result) {
             // Строим полный путь для текущей папки
@@ -3286,9 +3250,7 @@ namespace Assets.Editor.PlayCanvas {
         
         // Вспомогательные методы для типизированного доступа
         public T GetComponent<T>(string name) where T : class{
-            return components?.TryGetValue(name, out object component) == true
-                ? component as T ?? JsonConvert.DeserializeObject<T>(component.ToString())
-                : null;
+            return components?.TryGetValue(name, out object component) == true ? component as T ?? JsonConvert.DeserializeObject<T>(component.ToString()) : null;
         }
 
 
@@ -3472,6 +3434,7 @@ namespace Assets.Editor.PlayCanvas {
 
     #endregion SceneData
 }
+
 internal sealed class PlayCanvasFbxImportPostprocessor : AssetPostprocessor{
     private const string kRootFolder = "/PlayCanvasData/"; // ограничиваемся «нашими» файлами
 
@@ -3483,19 +3446,16 @@ internal sealed class PlayCanvasFbxImportPostprocessor : AssetPostprocessor{
         var imp = (ModelImporter)assetImporter;
 
         // ───────────── Scene ─────────────
-        //imp.globalScale               = 1f;       // Scale Factor = 1
-        //imp.useFileScale              = true;     // Convert Units ✓
-        imp.bakeAxisConversion        = false;
-        imp.preserveHierarchy         = false;
         imp.importCameras             = false;
         imp.importLights              = false;
         imp.importVisibility          = false;
         imp.importBlendShapes         = false;
-        imp.sortHierarchyByName       = false;
 
         // ───────────── Meshes ────────────
         imp.meshCompression           = ModelImporterMeshCompression.Off;
         imp.isReadable                = true;     // Read/Write ✓
+        imp.useFileUnits              = false;    // imp.useFileScale ? 0.01f : 1f;     // Convert Units ✓ Use fileScale useFileUnits;
+        imp.globalScale               = 1.0f;     // Scale Factor = 1
 
 #if UNITY_2021_2_OR_NEWER
         imp.optimizeMeshPolygons      = false;    // «Nothing»
@@ -3506,6 +3466,9 @@ internal sealed class PlayCanvasFbxImportPostprocessor : AssetPostprocessor{
         imp.addCollider               = false;
 
         // ───────────── Geometry ──────────
+        imp.preserveHierarchy         = true;      // Preserve Hierarchy ✓
+        imp.bakeAxisConversion        = true;      // Computes the axis conversion on geometry and animation for Models defined in an axis system that differs from Unity's (left handed, Z forward, Y-up). When enabled, Unity transforms the geometry and animation data in order to convert the axis. When disabled, Unity transforms the root GameObject of the hierarchy in order to convert the axis.
+        imp.sortHierarchyByName       = false;
         imp.keepQuads                 = false;
         imp.weldVertices              = false;
         imp.indexFormat               = ModelImporterIndexFormat.Auto;
