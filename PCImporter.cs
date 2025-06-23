@@ -1417,7 +1417,7 @@ namespace Assets.Editor.PlayCanvas {
                     processedAssets[modelId] = new ProcessedAsset {
                         prefab = null,
                         mesh = GetPrimitiveMesh(PrimitiveType.Cube),
-                        materials = new Material[] { new Material(Shader.Find("Universal Render Pipeline/Lit")) },
+                        materials = new Material[] { new Material(Shader.Find("Universal Render Pipeline/Simple Lit")) },
                         submeshNames = new string[] { "Missing_Model" }
                     };
                     continue;
@@ -1622,7 +1622,7 @@ namespace Assets.Editor.PlayCanvas {
                 // Если нет материалов в FBX, создаем дефолтный
                 Debug.LogWarning($"No materials found in FBX {modelId}, creating default");
                 materials = new Material[] { 
-                    new(Shader.Find("Universal Render Pipeline/Lit")) 
+                    new(Shader.Find("Universal Render Pipeline/Simple Lit")) 
                 };
             }
             
@@ -1669,7 +1669,7 @@ namespace Assets.Editor.PlayCanvas {
                     materials[i] = CreateMaterialFromPlayCanvas(materialData, matFolderPath);
                 } else {
                     // Fallback - создаем дефолтный материал
-                    materials[i] = new Material(Shader.Find("Universal Render Pipeline/Lit")) {
+                    materials[i] = new Material(Shader.Find("Universal Render Pipeline/Simple Lit")) {
                         name = $"PC_Material_{matId}"
                     };
                     Debug.LogWarning($"Material {matId} not found in global dictionary, using default");
@@ -1694,7 +1694,7 @@ namespace Assets.Editor.PlayCanvas {
                 }
             }
             
-            Material mat = new(Shader.Find("Universal Render Pipeline/Lit")) {
+            Material mat = new(Shader.Find("Universal Render Pipeline/Simple Lit")) {
                 name = safeName
             };
 
@@ -1981,7 +1981,7 @@ namespace Assets.Editor.PlayCanvas {
                     
                     // Fallback
                     meshFilter.sharedMesh = GetPrimitiveMesh(PrimitiveType.Cube);
-                    meshRenderer.sharedMaterial = new Material(Shader.Find("Universal Render Pipeline/Lit")) {
+                    meshRenderer.sharedMaterial = new Material(Shader.Find("Universal Render Pipeline/Simple Lit")) {
                         name = "Missing_Material"
                     };
                     
@@ -2041,7 +2041,7 @@ namespace Assets.Editor.PlayCanvas {
                 else {
                     Debug.LogWarning($"No materials to apply for {obj.name}");
                     // Применяем дефолтный материал
-                    meshRenderer.sharedMaterial = new Material(Shader.Find("Universal Render Pipeline/Lit")) {
+                    meshRenderer.sharedMaterial = new Material(Shader.Find("Universal Render Pipeline/Simple Lit")) {
                         name = "Default_Material",
                         color = Color.magenta
                     };
@@ -2133,7 +2133,7 @@ namespace Assets.Editor.PlayCanvas {
                             materials[i] = CreateMaterialFromPlayCanvas(materialData, matFolderPath);
                         } else {
                             Debug.LogWarning($"Material {matId} not found in global dictionary");
-                            materials[i] = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+                            materials[i] = new Material(Shader.Find("Universal Render Pipeline/Simple Lit"));
                         }
                     }
                     meshRenderer.sharedMaterials = materials;
@@ -2168,7 +2168,7 @@ namespace Assets.Editor.PlayCanvas {
                                 }
                             } else {
                                 Debug.LogWarning($"Material {matId} not found in global dictionary for model {obj.name}");
-                                materials[i] = new Material(Shader.Find("Universal Render Pipeline/Lit")) {
+                                materials[i] = new Material(Shader.Find("Universal Render Pipeline/Simple Lit")) {
                                     name = $"Missing_Material_{matId}"
                                 };
                             }
@@ -2178,7 +2178,7 @@ namespace Assets.Editor.PlayCanvas {
                     else {
                         // Материал по умолчанию
                         Debug.LogWarning($"No materials found for model {obj.name}, using default");
-                        Material defaultMat = new Material(Shader.Find("Universal Render Pipeline/Lit")) {
+                        Material defaultMat = new Material(Shader.Find("Universal Render Pipeline/Simple Lit")) {
                             name = "Default_Model_Material"
                         };
                         meshRenderer.sharedMaterial = defaultMat;
@@ -2283,7 +2283,7 @@ namespace Assets.Editor.PlayCanvas {
                         }
                         else {
                             // Материал по умолчанию
-                            Material defaultMat = new(Shader.Find("Universal Render Pipeline/Lit"));
+                            Material defaultMat = new(Shader.Find("Universal Render Pipeline/Simple Lit"));
                             meshRenderer.sharedMaterial = defaultMat;
                         }
                     }
@@ -2380,7 +2380,7 @@ namespace Assets.Editor.PlayCanvas {
                     Debug.Log($"Available materials in dictionary: {string.Join(", ", sceneData.materials?.Keys.Select(k => k.ToString()) ?? new string[0])}");
                     
                     // Создаем fallback материал
-                    materials[i] = new Material(Shader.Find("Universal Render Pipeline/Lit")) {
+                    materials[i] = new Material(Shader.Find("Universal Render Pipeline/Simple Lit")) {
                         name = $"Missing_Material_{matId}",
                         color = Color.magenta
                     };
